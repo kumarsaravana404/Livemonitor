@@ -1,0 +1,38 @@
+[
+  {
+    "id": 1772322259644,
+    "ip": "45.72.100.12",
+    "city": "Localhost",
+    "country": "Loopback",
+    "isp": "Internal",
+    "latitude": 0.0,
+    "longitude": 0.0,
+    "region": "",
+    "timezone": "",
+    "os": "Mac",
+    "browser": "Unknown Browser",
+    "device": "Browser Test",
+    "status": "FAILED",
+    "severity": "high",
+    "timestamp": "2026-02-28T23:44:19.646225Z",
+    "timeStr": "01/03/26, 05:14:19"
+  },
+  {
+    "id": 1772322283295,
+    "ip": "20.12.55.99",
+    "city": "Localhost",
+    "country": "Loopback",
+    "isp": "Internal",
+    "latitude": 0.0,
+    "longitude": 0.0,
+    "region": "",
+    "timezone": "",
+    "os": "Unknown OS",
+    "browser": "Unknown Browser",
+    "device": "\ud83d\udda5 Desktop",
+    "status": "FAILED",
+    "severity": "low",
+    "timestamp": "2026-02-28T23:44:43.297320Z",
+    "timeStr": "01/03/26, 05:14:43"
+  }
+]
