@@ -1,0 +1,14 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -c \"import sys; sys.path.insert(0,'backend'); from app import init_db; init_db()\" && gunicorn --chdir backend app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[variables]
+FLASK_ENV = "production"
+MAX_ATTEMPTS = "5"
+BLOCK_HOURS = "24"

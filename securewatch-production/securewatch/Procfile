@@ -1,0 +1,1 @@
+web: python -c "import sys; sys.path.insert(0,'backend'); from app import init_db; init_db()" && gunicorn --chdir backend app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60

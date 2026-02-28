@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  securewatch:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - FLASK_ENV=production
+      - SECRET_KEY=change-this-to-a-random-secret-key-in-production
+      - DB_PATH=/data/securewatch.db
+      - MAX_ATTEMPTS=5
+      - BASE_URL=https://your-domain.com
+    volumes:
+      - sw_data:/data
+    restart: unless-stopped
+
+volumes:
+  sw_data:

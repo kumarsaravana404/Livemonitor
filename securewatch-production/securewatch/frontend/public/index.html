@@ -1,0 +1,1426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SecureWatch — Login Threat Monitor</title>
+<meta name="description" content="Detect unauthorized login attempts in real-time. Know who's trying to access your accounts with IP tracking, geolocation, and instant alerts.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+/* ───────────────────────────────────────────
+   ROOT & RESET
+─────────────────────────────────────────── */
+:root {
+  --bg: #020b12;
+  --bg2: #030f1a;
+  --panel: #041424;
+  --panel2: #051828;
+  --border: #0a3a5a;
+  --border2: #0d4f7a;
+  --accent: #00d4ff;
+  --accent2: #00ff9d;
+  --danger: #ff3c3c;
+  --warn: #ffaa00;
+  --text: #c8e8f8;
+  --dim: #4a7a9b;
+  --mono: 'Share Tech Mono', monospace;
+  --head: 'Orbitron', sans-serif;
+  --body: 'Rajdhani', sans-serif;
+  --radius: 10px;
+  --transition: 0.22s ease;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:var(--body);font-size:15px;min-height:100vh;overflow-x:hidden;}
+a{color:inherit;text-decoration:none;}
+input,select,textarea,button{font-family:inherit;font-size:inherit;}
+
+/* ── GRID BACKGROUND ── */
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(0,212,255,.025)1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,.025)1px,transparent 1px);background-size:48px 48px;pointer-events:none;z-index:0;}
+
+/* ── GLOW ── */
+.glow-bg{position:fixed;inset:0;background:radial-gradient(ellipse at 20% 10%,rgba(0,80,180,.07) 0%,transparent 55%),radial-gradient(ellipse at 80% 90%,rgba(0,212,255,.04) 0%,transparent 50%);pointer-events:none;z-index:0;}
+
+/* ── SCANLINES ── */
+.scan{position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.03)2px,rgba(0,0,0,.03)4px);pointer-events:none;z-index:999;}
+
+/* ── PAGE SYSTEM ── */
+.page{display:none;position:relative;z-index:1;}
+.page.active{display:block;}
+
+/* ───────────────────────────────────────────
+   LANDING PAGE
+─────────────────────────────────────────── */
+#page-landing{min-height:100vh;}
+
+nav{display:flex;align-items:center;justify-content:space-between;padding:18px 40px;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(2,11,18,.92);backdrop-filter:blur(12px);z-index:50;}
+.nav-logo{display:flex;align-items:center;gap:12px;cursor:pointer;}
+.nav-logo-icon{width:38px;height:38px;border:2px solid var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 0 16px rgba(0,212,255,.3);}
+.nav-logo h1{font-family:var(--head);font-size:17px;letter-spacing:3px;color:var(--accent);text-shadow:0 0 16px rgba(0,212,255,.4);}
+.nav-links{display:flex;align-items:center;gap:24px;}
+.nav-link{font-family:var(--mono);font-size:11px;letter-spacing:1.5px;color:var(--dim);text-transform:uppercase;cursor:pointer;transition:color var(--transition);}
+.nav-link:hover{color:var(--accent);}
+.nav-btns{display:flex;gap:12px;}
+
+/* Buttons */
+.btn{padding:9px 22px;border-radius:6px;border:1px solid;cursor:pointer;font-family:var(--mono);font-size:11px;letter-spacing:1px;text-transform:uppercase;transition:all var(--transition);display:inline-flex;align-items:center;gap:7px;}
+.btn-ghost{background:transparent;border-color:var(--border2);color:var(--dim);}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent);}
+.btn-primary{background:rgba(0,212,255,.1);border-color:var(--accent);color:var(--accent);}
+.btn-primary:hover{background:rgba(0,212,255,.2);box-shadow:0 0 20px rgba(0,212,255,.25);}
+.btn-success{background:rgba(0,255,157,.1);border-color:var(--accent2);color:var(--accent2);}
+.btn-success:hover{background:rgba(0,255,157,.2);box-shadow:0 0 20px rgba(0,255,157,.25);}
+.btn-danger{background:rgba(255,60,60,.1);border-color:var(--danger);color:var(--danger);}
+.btn-danger:hover{background:rgba(255,60,60,.2);box-shadow:0 0 20px rgba(255,60,60,.25);}
+.btn-warn{background:rgba(255,170,0,.1);border-color:var(--warn);color:var(--warn);}
+.btn-warn:hover{background:rgba(255,170,0,.2);}
+.btn-lg{padding:13px 32px;font-size:12px;}
+.btn-sm{padding:5px 12px;font-size:10px;}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+
+/* Hero */
+.hero{text-align:center;padding:100px 20px 80px;max-width:860px;margin:0 auto;}
+.hero-tag{display:inline-flex;align-items:center;gap:8px;padding:6px 16px;border:1px solid var(--accent2);border-radius:20px;font-family:var(--mono);font-size:11px;color:var(--accent2);margin-bottom:32px;letter-spacing:1.5px;}
+.tag-dot{width:6px;height:6px;border-radius:50%;background:var(--accent2);box-shadow:0 0 8px var(--accent2);animation:blink 1.2s infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.hero h2{font-family:var(--head);font-size:clamp(30px,5vw,54px);font-weight:900;line-height:1.1;margin-bottom:24px;}
+.hero h2 .line1{color:var(--text);}
+.hero h2 .line2{color:var(--accent);text-shadow:0 0 40px rgba(0,212,255,.4);}
+.hero p{font-size:17px;color:var(--dim);max-width:580px;margin:0 auto 40px;line-height:1.7;}
+.hero-btns{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;}
+
+/* Counter strip */
+.counter-strip{display:flex;justify-content:center;gap:60px;padding:40px 20px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:80px;}
+.counter-item{text-align:center;}
+.counter-num{font-family:var(--head);font-size:34px;font-weight:900;color:var(--accent);text-shadow:0 0 20px rgba(0,212,255,.4);}
+.counter-label{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:2px;margin-top:4px;}
+
+/* Features */
+.features{max-width:1100px;margin:0 auto 80px;padding:0 20px;}
+.section-title{text-align:center;margin-bottom:48px;}
+.section-title h3{font-family:var(--head);font-size:24px;letter-spacing:2px;color:var(--text);margin-bottom:10px;}
+.section-title p{color:var(--dim);font-size:15px;}
+.features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;}
+.feature-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:28px;position:relative;overflow:hidden;transition:border-color var(--transition),transform var(--transition);}
+.feature-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+.feature-card.c1::before{background:linear-gradient(90deg,transparent,var(--accent),transparent);}
+.feature-card.c2::before{background:linear-gradient(90deg,transparent,var(--accent2),transparent);}
+.feature-card.c3::before{background:linear-gradient(90deg,transparent,var(--danger),transparent);}
+.feature-card.c4::before{background:linear-gradient(90deg,transparent,var(--warn),transparent);}
+.feature-card.c5::before{background:linear-gradient(90deg,transparent,#a855f7,transparent);}
+.feature-card.c6::before{background:linear-gradient(90deg,transparent,#f97316,transparent);}
+.feature-card:hover{border-color:var(--border2);transform:translateY(-3px);}
+.feature-icon{font-size:32px;margin-bottom:16px;}
+.feature-card h4{font-family:var(--head);font-size:13px;letter-spacing:1.5px;color:var(--text);margin-bottom:10px;}
+.feature-card p{color:var(--dim);font-size:14px;line-height:1.65;}
+
+/* Pricing */
+.pricing{max-width:900px;margin:0 auto 80px;padding:0 20px;}
+.pricing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px;}
+.price-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:32px;text-align:center;position:relative;transition:border-color var(--transition);}
+.price-card.featured{border-color:var(--accent);box-shadow:0 0 30px rgba(0,212,255,.1);}
+.price-badge{position:absolute;top:-1px;left:50%;transform:translateX(-50%);background:var(--accent);color:var(--bg);font-family:var(--mono);font-size:9px;letter-spacing:2px;padding:4px 14px;border-radius:0 0 8px 8px;}
+.price-name{font-family:var(--head);font-size:13px;letter-spacing:2px;color:var(--dim);margin-bottom:16px;}
+.price-amount{font-family:var(--head);font-size:36px;font-weight:900;color:var(--text);margin-bottom:4px;}
+.price-amount span{font-size:14px;color:var(--dim);}
+.price-period{font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:24px;letter-spacing:1px;}
+.price-features{list-style:none;margin-bottom:28px;text-align:left;}
+.price-features li{padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;color:var(--dim);display:flex;align-items:center;gap:8px;}
+.price-features li::before{content:'✓';color:var(--accent2);font-family:var(--mono);}
+
+/* How it works */
+.how-it-works{max-width:900px;margin:0 auto 80px;padding:0 20px;}
+.steps{display:flex;flex-direction:column;gap:0;}
+.step{display:flex;gap:28px;align-items:flex-start;position:relative;padding-bottom:40px;}
+.step:last-child{padding-bottom:0;}
+.step:not(:last-child)::after{content:'';position:absolute;left:19px;top:44px;bottom:0;width:2px;background:linear-gradient(to bottom,var(--border2),transparent);}
+.step-num{width:40px;height:40px;border-radius:50%;border:2px solid var(--accent);background:rgba(0,212,255,.05);display:flex;align-items:center;justify-content:center;font-family:var(--head);font-size:14px;font-weight:900;color:var(--accent);flex-shrink:0;box-shadow:0 0 16px rgba(0,212,255,.2);}
+.step-content h4{font-family:var(--head);font-size:14px;letter-spacing:1.5px;color:var(--text);margin-bottom:8px;margin-top:8px;}
+.step-content p{color:var(--dim);font-size:14px;line-height:1.65;}
+.step-code{margin-top:12px;background:rgba(0,0,0,.4);border:1px solid var(--border);border-radius:6px;padding:14px;font-family:var(--mono);font-size:12px;color:var(--accent2);line-height:1.7;overflow-x:auto;}
+
+/* Footer */
+footer{border-top:1px solid var(--border);padding:32px 40px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--dim);}
+
+/* ───────────────────────────────────────────
+   AUTH PAGES
+─────────────────────────────────────────── */
+.auth-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:40px 20px;}
+.auth-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:40px;width:100%;max-width:440px;box-shadow:0 0 60px rgba(0,212,255,.05);}
+.auth-logo{text-align:center;margin-bottom:32px;}
+.auth-logo .logo-icon{width:50px;height:50px;border:2px solid var(--accent);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:24px;margin:0 auto 12px;box-shadow:0 0 20px rgba(0,212,255,.3);}
+.auth-logo h2{font-family:var(--head);font-size:18px;letter-spacing:2px;color:var(--accent);}
+.auth-logo p{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:2px;margin-top:4px;}
+.form-group{margin-bottom:20px;}
+.form-label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:1.5px;color:var(--dim);text-transform:uppercase;margin-bottom:8px;}
+.form-input{width:100%;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:6px;padding:11px 14px;color:var(--text);font-family:var(--mono);font-size:13px;transition:border-color var(--transition),box-shadow var(--transition);outline:none;}
+.form-input:focus{border-color:var(--accent);box-shadow:0 0 12px rgba(0,212,255,.15);}
+.form-input::placeholder{color:var(--dim);}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.auth-toggle{text-align:center;margin-top:20px;font-family:var(--mono);font-size:11px;color:var(--dim);}
+.auth-toggle span{color:var(--accent);cursor:pointer;}
+.auth-toggle span:hover{text-decoration:underline;}
+.auth-error{background:rgba(255,60,60,.08);border:1px solid rgba(255,60,60,.3);border-radius:6px;padding:10px 14px;font-family:var(--mono);font-size:11px;color:var(--danger);margin-bottom:16px;display:none;}
+.auth-error.show{display:block;}
+
+/* ───────────────────────────────────────────
+   DASHBOARD
+─────────────────────────────────────────── */
+#page-dashboard{min-height:100vh;}
+
+.app-layout{display:flex;min-height:100vh;}
+
+/* Sidebar */
+.sidebar{width:240px;background:var(--panel);border-right:1px solid var(--border);flex-shrink:0;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto;}
+.sidebar-logo{padding:20px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;cursor:pointer;}
+.sidebar-logo .s-icon{width:32px;height:32px;border:1.5px solid var(--accent);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 0 12px rgba(0,212,255,.2);}
+.sidebar-logo span{font-family:var(--head);font-size:13px;letter-spacing:2px;color:var(--accent);}
+.sidebar-nav{padding:16px 10px;flex:1;}
+.nav-item{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:7px;cursor:pointer;margin-bottom:2px;font-family:var(--mono);font-size:11px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;transition:all var(--transition);}
+.nav-item:hover{background:rgba(0,212,255,.04);color:var(--text);}
+.nav-item.active{background:rgba(0,212,255,.08);color:var(--accent);border:1px solid rgba(0,212,255,.15);}
+.nav-icon{font-size:15px;width:18px;text-align:center;}
+.sidebar-footer{padding:14px 10px;border-top:1px solid var(--border);}
+.user-pill{display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,255,157,.04);border:1px solid rgba(0,255,157,.1);border-radius:7px;}
+.user-avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,rgba(0,212,255,.2),rgba(0,255,157,.2));border:1.5px solid var(--accent2);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;}
+.user-email{font-family:var(--mono);font-size:9px;color:var(--accent2);letter-spacing:.5px;word-break:break-all;}
+.user-plan{font-size:9px;color:var(--dim);margin-top:1px;letter-spacing:1px;}
+
+/* Main content */
+.main-content{flex:1;overflow-x:hidden;}
+
+/* Top bar */
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid var(--border);background:rgba(2,11,18,.8);backdrop-filter:blur(8px);position:sticky;top:0;z-index:10;}
+.topbar-title{font-family:var(--head);font-size:14px;letter-spacing:2px;color:var(--text);}
+.topbar-right{display:flex;align-items:center;gap:14px;}
+.status-pill{display:flex;align-items:center;gap:7px;padding:5px 13px;border:1px solid var(--accent2);border-radius:16px;font-family:var(--mono);font-size:10px;color:var(--accent2);}
+.status-dot{width:7px;height:7px;border-radius:50%;background:var(--accent2);box-shadow:0 0 7px var(--accent2);animation:blink 1.2s infinite;}
+
+/* Sections */
+.dash-section{display:none;padding:28px;}
+.dash-section.active{display:block;}
+
+/* Stats */
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px;}
+.stat-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:20px;position:relative;overflow:hidden;}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+.sc-blue::before{background:linear-gradient(90deg,transparent,var(--accent),transparent);}
+.sc-red::before{background:linear-gradient(90deg,transparent,var(--danger),transparent);}
+.sc-yellow::before{background:linear-gradient(90deg,transparent,var(--warn),transparent);}
+.sc-green::before{background:linear-gradient(90deg,transparent,var(--accent2),transparent);}
+.stat-label{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:1.5px;margin-bottom:10px;}
+.stat-value{font-family:var(--head);font-size:34px;font-weight:700;line-height:1;}
+.sc-blue .stat-value{color:var(--accent);}
+.sc-red .stat-value{color:var(--danger);}
+.sc-yellow .stat-value{color:var(--warn);}
+.sc-green .stat-value{color:var(--accent2);}
+.stat-sub{font-size:11px;color:var(--dim);margin-top:6px;}
+
+/* Panel */
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:20px;}
+.panel-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--panel2);}
+.panel-title{font-family:var(--head);font-size:11px;letter-spacing:2px;color:var(--accent);}
+.panel-badge{font-family:var(--mono);font-size:9px;padding:3px 9px;border-radius:12px;border:1px solid;color:var(--danger);border-color:var(--danger);animation:blink 1s infinite;}
+
+/* Attempt table */
+.table-wrap{overflow-x:auto;max-height:460px;overflow-y:auto;}
+.attempt-table{width:100%;border-collapse:collapse;}
+.attempt-table th{font-family:var(--mono);font-size:9px;letter-spacing:1.5px;color:var(--dim);text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);background:rgba(0,0,0,.2);text-transform:uppercase;position:sticky;top:0;}
+.attempt-table td{padding:12px 14px;border-bottom:1px solid rgba(10,58,90,.35);font-size:13px;vertical-align:middle;}
+.attempt-table tr:hover td{background:rgba(0,212,255,.03);}
+.attempt-table tr.row-danger td{background:rgba(255,60,60,.02);}
+.attempt-num{font-family:var(--head);font-size:16px;font-weight:700;color:var(--danger);}
+.ip-chip{font-family:var(--mono);font-size:11px;background:rgba(0,212,255,.07);border:1px solid rgba(0,212,255,.18);padding:3px 9px;border-radius:4px;color:var(--accent);cursor:pointer;white-space:nowrap;}
+.ip-chip:hover{background:rgba(0,212,255,.14);}
+.loc-main{font-size:13px;}
+.loc-isp{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:2px;}
+.device-info{font-size:12px;}
+.device-info .dev-os{color:var(--dim);font-size:11px;}
+.time-cell{font-family:var(--mono);font-size:10px;color:var(--dim);white-space:nowrap;}
+.status-chip{font-family:var(--mono);font-size:9px;padding:3px 9px;border-radius:10px;border:1px solid;white-space:nowrap;}
+.st-failed{color:var(--danger);border-color:var(--danger);background:rgba(255,60,60,.06);}
+.st-blocked,.st-auto_blocked{color:var(--warn);border-color:var(--warn);background:rgba(255,170,0,.06);}
+.st-allowed{color:var(--accent2);border-color:var(--accent2);background:rgba(0,255,157,.06);}
+.row-actions{display:flex;gap:6px;}
+
+/* Empty state */
+.empty-state{text-align:center;padding:60px 20px;color:var(--dim);font-family:var(--mono);font-size:12px;letter-spacing:1px;}
+.empty-icon{font-size:40px;margin-bottom:12px;opacity:.4;}
+
+/* Accounts */
+.account-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:14px;display:flex;align-items:center;gap:16px;transition:border-color var(--transition);}
+.account-card:hover{border-color:var(--border2);}
+.account-avatar{width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,rgba(0,212,255,.1),rgba(0,255,157,.1));border:2px solid var(--accent2);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;}
+.account-info{flex:1;}
+.account-email{font-family:var(--mono);font-size:13px;color:var(--accent2);}
+.account-name{font-size:12px;color:var(--dim);margin-top:2px;}
+.account-id{font-family:var(--mono);font-size:10px;color:var(--border2);margin-top:4px;cursor:pointer;}
+.account-id:hover{color:var(--accent);}
+
+/* API key */
+.api-key-box{background:rgba(0,0,0,.4);border:1px solid var(--border);border-radius:8px;padding:16px;font-family:var(--mono);font-size:13px;color:var(--accent);display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;word-break:break-all;}
+.copy-btn{flex-shrink:0;}
+
+/* Integration code */
+.code-block{background:rgba(0,0,0,.5);border:1px solid var(--border);border-radius:8px;padding:18px;font-family:var(--mono);font-size:12px;color:var(--accent2);line-height:1.8;overflow-x:auto;margin-bottom:16px;white-space:pre;}
+
+/* Blocked IPs */
+.blocked-card{background:rgba(255,60,60,.04);border:1px solid rgba(255,60,60,.18);border-radius:8px;padding:14px 18px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.blocked-ip-addr{font-family:var(--mono);font-size:13px;color:var(--danger);}
+.blocked-meta{font-size:12px;color:var(--dim);margin-top:3px;}
+
+/* Bar chart */
+.bar-chart{display:flex;flex-direction:column;gap:8px;padding:16px 18px;}
+.bar-row{display:flex;align-items:center;gap:10px;}
+.bar-label{font-family:var(--mono);font-size:10px;color:var(--dim);width:100px;flex-shrink:0;text-align:right;}
+.bar-track{flex:1;height:20px;background:rgba(0,0,0,.3);border-radius:4px;overflow:hidden;}
+.bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),rgba(0,212,255,.4));border-radius:4px;transition:width .6s ease;}
+.bar-count{font-family:var(--mono);font-size:10px;color:var(--accent);width:40px;flex-shrink:0;}
+
+/* Weekly chart */
+.week-chart{display:flex;align-items:flex-end;gap:8px;padding:20px 18px;height:120px;}
+.week-bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;}
+.week-bar-fill{width:100%;background:linear-gradient(to top,var(--accent),rgba(0,212,255,.3));border-radius:3px 3px 0 0;min-height:4px;transition:height .6s ease;}
+.week-bar-label{font-family:var(--mono);font-size:9px;color:var(--dim);}
+
+/* Report modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:200;align-items:center;justify-content:center;backdrop-filter:blur(4px);}
+.modal-overlay.open{display:flex;}
+.modal{background:var(--panel);border:1px solid var(--border2);border-radius:14px;width:92%;max-width:700px;max-height:88vh;overflow-y:auto;box-shadow:0 0 60px rgba(0,212,255,.08);animation:modalin .3s ease-out;}
+@keyframes modalin{from{opacity:0;transform:translateY(16px) scale(.97)}to{opacity:1;transform:none}}
+.modal-head{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--panel);z-index:1;}
+.modal-title{font-family:var(--head);font-size:12px;letter-spacing:2px;color:var(--accent);}
+.modal-close{background:none;border:1px solid var(--border2);color:var(--dim);width:30px;height:30px;border-radius:5px;cursor:pointer;font-size:14px;transition:all var(--transition);}
+.modal-close:hover{border-color:var(--danger);color:var(--danger);}
+.modal-body{padding:22px;}
+.modal-footer{padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:10px;justify-content:flex-end;position:sticky;bottom:0;background:var(--panel);}
+
+/* Report sections */
+.report-disclaimer{background:rgba(255,170,0,.05);border:1px solid rgba(255,170,0,.2);border-radius:8px;padding:14px;font-size:13px;color:var(--warn);line-height:1.7;margin-bottom:20px;}
+.report-section{margin-bottom:18px;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+.report-section-title{padding:9px 14px;background:rgba(0,212,255,.04);border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:2px;}
+.report-row{display:flex;padding:9px 14px;border-bottom:1px solid rgba(10,58,90,.25);font-family:var(--mono);font-size:11px;}
+.report-row:last-child{border:none;}
+.rk{color:var(--dim);width:170px;flex-shrink:0;}
+.rv{color:var(--text);}
+.rv.danger{color:var(--danger);}
+.rv.accent{color:var(--accent);}
+
+/* Toast */
+.toast-container{position:fixed;top:22px;right:22px;z-index:500;display:flex;flex-direction:column;gap:9px;}
+.toast{padding:13px 18px;border-radius:8px;border:1px solid;font-family:var(--mono);font-size:11px;letter-spacing:.5px;animation:toastin .3s ease-out;max-width:360px;backdrop-filter:blur(10px);}
+@keyframes toastin{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}
+.toast-danger{background:rgba(20,5,5,.92);border-color:var(--danger);color:var(--danger);box-shadow:0 0 20px rgba(255,60,60,.15);}
+.toast-success{background:rgba(5,20,15,.92);border-color:var(--accent2);color:var(--accent2);box-shadow:0 0 20px rgba(0,255,157,.15);}
+.toast-info{background:rgba(5,15,22,.92);border-color:var(--accent);color:var(--accent);box-shadow:0 0 20px rgba(0,212,255,.15);}
+
+/* Add account form */
+.add-account-form{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:22px;margin-bottom:22px;}
+.add-account-form h3{font-family:var(--head);font-size:12px;letter-spacing:2px;color:var(--accent);margin-bottom:18px;}
+.form-inline{display:flex;gap:12px;align-items:flex-end;}
+.form-inline .form-group{flex:1;margin:0;}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
+
+/* Loading spinner */
+.spinner{width:24px;height:24px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;margin:40px auto;}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Responsive */
+@media(max-width:900px){
+  .stats-grid{grid-template-columns:repeat(2,1fr);}
+  .sidebar{display:none;}
+  .app-layout{flex-direction:column;}
+}
+@media(max-width:600px){
+  nav{padding:14px 16px;}
+  .nav-links{display:none;}
+  .hero{padding:60px 16px 40px;}
+  .counter-strip{gap:24px;flex-wrap:wrap;}
+  .stats-grid{grid-template-columns:1fr 1fr;}
+  .dash-section{padding:16px;}
+}
+</style>
+</head>
+<body>
+
+<div class="glow-bg"></div>
+<div class="scan"></div>
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- ─────────────────────────────────────────
+  REPORT MODAL
+───────────────────────────────────────── -->
+<div class="modal-overlay" id="reportModal">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title">📋 CYBER EVIDENCE REPORT</span>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="reportBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary btn-sm" onclick="window.print()">🖨 Print / PDF</button>
+      <button class="btn btn-warn btn-sm" onclick="copyReport()">📋 Copy Report</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────
+  PAGE: LANDING
+───────────────────────────────────────── -->
+<div id="page-landing" class="page active">
+  <nav>
+    <div class="nav-logo" onclick="goTo('landing')">
+      <div class="nav-logo-icon">🛡</div>
+      <h1>SECUREWATCH</h1>
+    </div>
+    <div class="nav-links">
+      <span class="nav-link" onclick="scrollTo('features')">Features</span>
+      <span class="nav-link" onclick="scrollTo('how')">How It Works</span>
+      <span class="nav-link" onclick="scrollTo('pricing')">Pricing</span>
+    </div>
+    <div class="nav-btns">
+      <button class="btn btn-ghost" onclick="goTo('login')">Login</button>
+      <button class="btn btn-primary" onclick="goTo('register')">Get Started Free</button>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="hero-tag"><div class="tag-dot"></div> REAL-TIME THREAT DETECTION</div>
+    <h2>
+      <div class="line1">Know Exactly Who's</div>
+      <div class="line2">Trying to Break In</div>
+    </h2>
+    <p>SecureWatch monitors your accounts 24/7 and instantly alerts you when someone tries an unauthorized login — showing their real IP, location, ISP, and device so you can take action or file a police complaint.</p>
+    <div class="hero-btns">
+      <button class="btn btn-primary btn-lg" onclick="goTo('register')">🚀 Start Monitoring Free</button>
+      <button class="btn btn-ghost btn-lg" onclick="goTo('login')">Sign In</button>
+    </div>
+  </div>
+
+  <!-- Counter strip -->
+  <div class="counter-strip">
+    <div class="counter-item">
+      <div class="counter-num" id="counterAttempts">0</div>
+      <div class="counter-label">Threats Detected</div>
+    </div>
+    <div class="counter-item">
+      <div class="counter-num" id="counterUsers">0</div>
+      <div class="counter-label">Accounts Protected</div>
+    </div>
+    <div class="counter-item">
+      <div class="counter-num" id="counterCountries">0</div>
+      <div class="counter-label">Countries Tracked</div>
+    </div>
+    <div class="counter-item">
+      <div class="counter-num" id="counterUptime">99.9%</div>
+      <div class="counter-label">Uptime</div>
+    </div>
+  </div>
+
+  <!-- Features -->
+  <div class="features" id="features">
+    <div class="section-title">
+      <h3>EVERYTHING YOU NEED</h3>
+      <p>Built for individuals, developers, and organizations who take security seriously</p>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card c1">
+        <div class="feature-icon">⚡</div>
+        <h4>REAL-TIME ALERTS</h4>
+        <p>Get notified the instant someone tries to log in to your account from an unrecognized device or location.</p>
+      </div>
+      <div class="feature-card c2">
+        <div class="feature-icon">🌍</div>
+        <h4>IP GEOLOCATION</h4>
+        <p>See exactly where the attacker is located — city, country, and coordinates — on an interactive threat map.</p>
+      </div>
+      <div class="feature-card c3">
+        <div class="feature-icon">📋</div>
+        <h4>EVIDENCE REPORTS</h4>
+        <p>Auto-generate forensic reports with IP, ISP, timestamp and device info — ready to submit to cybercrime authorities.</p>
+      </div>
+      <div class="feature-card c4">
+        <div class="feature-icon">🚫</div>
+        <h4>IP BLOCKING</h4>
+        <p>Block any suspicious IP with one click. Auto-block kicks in after repeated failed attempts from the same source.</p>
+      </div>
+      <div class="feature-card c5">
+        <div class="feature-icon">💻</div>
+        <h4>DEVICE FINGERPRINTING</h4>
+        <p>Identify attacker devices by OS, browser, and device type. Detect bots, scripts, and mobile intrusions.</p>
+      </div>
+      <div class="feature-card c6">
+        <div class="feature-icon">🔌</div>
+        <h4>SIMPLE API</h4>
+        <p>One API call integrates SecureWatch into any existing login form. Works with any language or framework.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- How it works -->
+  <div class="how-it-works" id="how">
+    <div class="section-title">
+      <h3>HOW IT WORKS</h3>
+      <p>Integrate in minutes, protect forever</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <h4>CREATE AN ACCOUNT & GET YOUR API KEY</h4>
+          <p>Register for free, add the email you want to protect, and get a unique API key instantly.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <h4>ADD ONE LINE TO YOUR LOGIN FORM</h4>
+          <p>Call our API endpoint whenever a login attempt happens on your platform. Works with any backend.</p>
+          <div class="step-code">POST https://yoursite.com/api/report-attempt
+Authorization: Bearer sw_your_api_key
+
+{
+  "account_id": "your-monitored-account-id",
+  "ip_address": "captured-from-request",
+  "user_agent": "browser-user-agent",
+  "status": "FAILED"
+}</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <h4>MONITOR YOUR DASHBOARD IN REAL TIME</h4>
+          <p>See every attempt live — with IP address, location, ISP, device info, and attempt counter.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <h4>GENERATE REPORTS & FILE COMPLAINTS</h4>
+          <p>Click any attempt to generate a full forensic report. Use it to file a complaint at cybercrime.gov.in or your country's cyber crime authority. Law enforcement can then legally compel the ISP to reveal the attacker's identity.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pricing -->
+  <div class="pricing" id="pricing">
+    <div class="section-title">
+      <h3>SIMPLE PRICING</h3>
+      <p>Start free, upgrade when you need more power</p>
+    </div>
+    <div class="pricing-grid">
+      <div class="price-card">
+        <div class="price-name">FREE</div>
+        <div class="price-amount">$0<span>/mo</span></div>
+        <div class="price-period">FOREVER FREE</div>
+        <ul class="price-features">
+          <li>1 monitored account</li>
+          <li>100 attempts/month</li>
+          <li>Basic geolocation</li>
+          <li>Evidence reports</li>
+          <li>Manual IP blocking</li>
+        </ul>
+        <button class="btn btn-ghost" style="width:100%" onclick="goTo('register')">Get Started</button>
+      </div>
+      <div class="price-card featured">
+        <div class="price-badge">MOST POPULAR</div>
+        <div class="price-name">PRO</div>
+        <div class="price-amount">$9<span>/mo</span></div>
+        <div class="price-period">BILLED MONTHLY</div>
+        <ul class="price-features">
+          <li>10 monitored accounts</li>
+          <li>10,000 attempts/month</li>
+          <li>Advanced geolocation</li>
+          <li>Email alerts</li>
+          <li>Auto-blocking rules</li>
+          <li>PDF report export</li>
+          <li>API access</li>
+        </ul>
+        <button class="btn btn-primary" style="width:100%" onclick="goTo('register')">Start Pro Trial</button>
+      </div>
+      <div class="price-card">
+        <div class="price-name">ENTERPRISE</div>
+        <div class="price-amount">$29<span>/mo</span></div>
+        <div class="price-period">BILLED MONTHLY</div>
+        <ul class="price-features">
+          <li>Unlimited accounts</li>
+          <li>Unlimited attempts</li>
+          <li>Webhook integrations</li>
+          <li>SMS alerts</li>
+          <li>Team dashboard</li>
+          <li>Priority support</li>
+          <li>Custom retention</li>
+        </ul>
+        <button class="btn btn-ghost" style="width:100%" onclick="goTo('register')">Contact Sales</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <div style="margin-bottom:10px;">🛡 SECUREWATCH &nbsp;|&nbsp; Protecting accounts worldwide</div>
+    <div>cybercrime.gov.in (India) &nbsp;·&nbsp; ic3.gov (USA) &nbsp;·&nbsp; actionfraud.police.uk (UK)</div>
+  </footer>
+</div>
+
+<!-- ─────────────────────────────────────────
+  PAGE: REGISTER
+───────────────────────────────────────── -->
+<div id="page-register" class="page">
+  <div class="auth-page">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <div class="logo-icon">🛡</div>
+        <h2>SECUREWATCH</h2>
+        <p>CREATE YOUR ACCOUNT</p>
+      </div>
+      <div class="auth-error" id="registerError"></div>
+      <div class="form-group">
+        <label class="form-label">Email Address</label>
+        <input type="email" class="form-input" id="regEmail" placeholder="you@example.com">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password (min 8 characters)</label>
+        <input type="password" class="form-input" id="regPassword" placeholder="••••••••">
+      </div>
+      <button class="btn btn-primary" style="width:100%;justify-content:center;" id="regBtn" onclick="register()">Create Account</button>
+      <div class="auth-toggle">Already have an account? <span onclick="goTo('login')">Sign In</span></div>
+      <div class="auth-toggle" style="margin-top:10px"><span onclick="goTo('landing')" style="color:var(--dim)">← Back to Home</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────
+  PAGE: LOGIN
+───────────────────────────────────────── -->
+<div id="page-login" class="page">
+  <div class="auth-page">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <div class="logo-icon">🛡</div>
+        <h2>SECUREWATCH</h2>
+        <p>SIGN IN TO DASHBOARD</p>
+      </div>
+      <div class="auth-error" id="loginError"></div>
+      <div class="form-group">
+        <label class="form-label">Email Address</label>
+        <input type="email" class="form-input" id="loginEmail" placeholder="you@example.com">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input type="password" class="form-input" id="loginPassword" placeholder="••••••••">
+      </div>
+      <button class="btn btn-primary" style="width:100%;justify-content:center;" id="loginBtn" onclick="loginUser()">Sign In</button>
+      <div class="auth-toggle">Don't have an account? <span onclick="goTo('register')">Sign Up Free</span></div>
+      <div class="auth-toggle" style="margin-top:10px"><span onclick="goTo('landing')" style="color:var(--dim)">← Back to Home</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────
+  PAGE: DASHBOARD
+───────────────────────────────────────── -->
+<div id="page-dashboard" class="page">
+  <div class="app-layout">
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-logo" onclick="goTo('landing')">
+        <div class="s-icon">🛡</div>
+        <span>SECUREWATCH</span>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-item active" onclick="showSection('overview')" id="nav-overview">
+          <span class="nav-icon">📊</span> Overview
+        </div>
+        <div class="nav-item" onclick="showSection('attempts')" id="nav-attempts">
+          <span class="nav-icon">🚨</span> Live Attempts
+        </div>
+        <div class="nav-item" onclick="showSection('accounts')" id="nav-accounts">
+          <span class="nav-icon">👤</span> My Accounts
+        </div>
+        <div class="nav-item" onclick="showSection('blocked')" id="nav-blocked">
+          <span class="nav-icon">🚫</span> Blocked IPs
+        </div>
+        <div class="nav-item" onclick="showSection('integrate')" id="nav-integrate">
+          <span class="nav-icon">🔌</span> Integration
+        </div>
+        <div class="nav-item" onclick="showSection('apikeys')" id="nav-apikeys">
+          <span class="nav-icon">🔑</span> API Keys
+        </div>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user-pill">
+          <div class="user-avatar">👤</div>
+          <div>
+            <div class="user-email" id="sidebarEmail">—</div>
+            <div class="user-plan">FREE PLAN</div>
+          </div>
+        </div>
+        <button class="btn btn-ghost btn-sm" style="width:100%;margin-top:10px;justify-content:center;" onclick="logout()">Sign Out</button>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <div class="main-content">
+      <div class="topbar">
+        <span class="topbar-title" id="topbarTitle">OVERVIEW</span>
+        <div class="topbar-right">
+          <div class="status-pill"><div class="status-dot"></div>MONITORING ACTIVE</div>
+          <button class="btn btn-primary btn-sm" onclick="refreshDashboard()">↻ Refresh</button>
+          <button class="btn btn-ghost btn-sm" onclick="logout()">Sign Out</button>
+        </div>
+      </div>
+
+      <!-- ── OVERVIEW ── -->
+      <div class="dash-section active" id="section-overview">
+        <div class="stats-grid" id="statsGrid">
+          <div class="stat-card sc-blue"><div class="stat-label">⚡ TOTAL ATTEMPTS</div><div class="stat-value" id="sv-total">—</div><div class="stat-sub">All time</div></div>
+          <div class="stat-card sc-red"><div class="stat-label">🚨 FAILED LOGINS</div><div class="stat-value" id="sv-failed">—</div><div class="stat-sub">Unauthorized</div></div>
+          <div class="stat-card sc-yellow"><div class="stat-label">🚫 BLOCKED IPs</div><div class="stat-value" id="sv-blocked">—</div><div class="stat-sub">Currently blocked</div></div>
+          <div class="stat-card sc-green"><div class="stat-label">🌍 COUNTRIES</div><div class="stat-value" id="sv-countries">—</div><div class="stat-sub">Attack origins</div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+          <div class="panel">
+            <div class="panel-header"><span class="panel-title">🌍 TOP ATTACK COUNTRIES</span></div>
+            <div class="bar-chart" id="countryChart"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><span class="panel-title">📈 WEEKLY ACTIVITY</span></div>
+            <div class="week-chart" id="weekChart"></div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:20px">
+          <div class="panel-header"><span class="panel-title">🔴 RECENT ATTEMPTS</span><span class="panel-badge">LIVE</span></div>
+          <div class="table-wrap">
+            <table class="attempt-table">
+              <thead><tr><th>#</th><th>IP Address</th><th>Location</th><th>Device</th><th>Time</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="recentAttempts"><tr><td colspan="7"><div class="empty-state"><div class="empty-icon">🛡</div>No attempts yet</div></td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── LIVE ATTEMPTS ── -->
+      <div class="dash-section" id="section-attempts">
+        <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+          <button class="btn btn-danger" onclick="refreshAttempts()">↻ Refresh</button>
+          <button class="btn btn-primary" onclick="exportAll()">📥 Export Evidence</button>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">🚨 ALL LOGIN ATTEMPTS</span><span class="panel-badge">LIVE</span></div>
+          <div class="table-wrap">
+            <table class="attempt-table">
+              <thead><tr><th>#</th><th>IP Address</th><th>Location / ISP</th><th>Device</th><th>Time</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="allAttempts"><tr><td colspan="7"><div class="empty-state"><div class="empty-icon">🛡</div>No attempts recorded yet</div></td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── ACCOUNTS ── -->
+      <div class="dash-section" id="section-accounts">
+        <div class="add-account-form">
+          <h3>➕ ADD ACCOUNT TO MONITOR</h3>
+          <div class="form-inline">
+            <div class="form-group">
+              <label class="form-label">Account Email to Protect</label>
+              <input type="email" class="form-input" id="newAccountEmail" placeholder="account@gmail.com">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Label (optional)</label>
+              <input type="text" class="form-input" id="newAccountName" placeholder="My Gmail">
+            </div>
+            <button class="btn btn-success" onclick="addAccount()">Add Account</button>
+          </div>
+        </div>
+        <div id="accountsList"><div class="spinner"></div></div>
+      </div>
+
+      <!-- ── BLOCKED IPs ── -->
+      <div class="dash-section" id="section-blocked">
+        <div style="margin-bottom:20px;">
+          <button class="btn btn-danger" onclick="refreshBlocked()">↻ Refresh</button>
+        </div>
+        <div id="blockedList"><div class="spinner"></div></div>
+      </div>
+
+      <!-- ── INTEGRATION ── -->
+      <div class="dash-section" id="section-integrate">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">🔌 INTEGRATION GUIDE</span></div>
+          <div style="padding:22px;">
+            <p style="color:var(--dim);margin-bottom:20px;line-height:1.7;">Add SecureWatch to your existing login system in under 5 minutes. When any login attempt happens on your platform, call our API to log it and get instant alerts.</p>
+
+            <h4 style="font-family:var(--head);font-size:11px;letter-spacing:2px;color:var(--accent);margin-bottom:10px;">PYTHON / FLASK</h4>
+            <div class="code-block" id="codePython">Loading your API key...</div>
+
+            <h4 style="font-family:var(--head);font-size:11px;letter-spacing:2px;color:var(--accent);margin-bottom:10px;margin-top:20px;">NODE.JS / EXPRESS</h4>
+            <div class="code-block" id="codeNode">Loading your API key...</div>
+
+            <h4 style="font-family:var(--head);font-size:11px;letter-spacing:2px;color:var(--accent);margin-bottom:10px;margin-top:20px;">PHP</h4>
+            <div class="code-block" id="codePHP">Loading your API key...</div>
+
+            <div style="background:rgba(0,255,157,.04);border:1px solid rgba(0,255,157,.15);border-radius:8px;padding:16px;margin-top:20px;">
+              <p style="font-family:var(--mono);font-size:11px;color:var(--accent2);line-height:2;">
+                ✅ Call the API on EVERY login attempt (success or failure)<br>
+                ✅ Pass the real IP from X-Forwarded-For header<br>
+                ✅ Include the User-Agent for device fingerprinting<br>
+                ✅ Your account_id is shown on the Accounts page
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── API KEYS ── -->
+      <div class="dash-section" id="section-apikeys">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">🔑 YOUR API KEY</span></div>
+          <div style="padding:22px;">
+            <p style="color:var(--dim);margin-bottom:16px;font-size:14px;line-height:1.7;">Use this API key in the Authorization header of all API requests. Keep it secret — treat it like a password.</p>
+            <div class="api-key-box">
+              <span id="apiKeyDisplay">Loading...</span>
+              <button class="btn btn-primary btn-sm copy-btn" onclick="copyApiKey()">Copy</button>
+            </div>
+            <div style="background:rgba(255,60,60,.05);border:1px solid rgba(255,60,60,.15);border-radius:8px;padding:14px;">
+              <p style="font-family:var(--mono);font-size:11px;color:var(--danger);line-height:1.8;">
+                ⚠ Never share your API key publicly<br>
+                ⚠ Never commit it to GitHub or public repos<br>
+                ⚠ Store it in environment variables (.env files)
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /main-content -->
+  </div><!-- /app-layout -->
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════
+
+const API = ''; // same-origin
+let currentUser = null;
+let allAttemptsCache = [];
+let accountsCache = [];
+let activeReportData = null;
+let currentSection = 'overview';
+
+// ══════════════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════════════
+
+window.onload = async () => {
+  animateCounters();
+  const saved = localStorage.getItem('sw_user');
+  if (saved) {
+    try {
+      currentUser = JSON.parse(saved);
+      // Verify still valid
+      const r = await apiFetch('/api/auth/me');
+      if (r.error) { logout(); return; }
+      goTo('dashboard');
+    } catch {
+      logout();
+    }
+  }
+};
+
+// ══════════════════════════════════════════════
+//  PAGE ROUTING
+// ══════════════════════════════════════════════
+
+function goTo(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + page)?.classList.add('active');
+  window.scrollTo(0, 0);
+  if (page === 'dashboard') loadDashboard();
+}
+
+function scrollTo(id) {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
+}
+
+function showSection(name) {
+  currentSection = name;
+  document.querySelectorAll('.dash-section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+  document.getElementById('section-' + name)?.classList.add('active');
+  document.getElementById('nav-' + name)?.classList.add('active');
+  document.getElementById('topbarTitle').textContent = name.toUpperCase();
+
+  if (name === 'attempts') refreshAttempts();
+  else if (name === 'accounts') loadAccounts();
+  else if (name === 'blocked') refreshBlocked();
+  else if (name === 'integrate') loadIntegration();
+  else if (name === 'apikeys') loadApiKey();
+  else if (name === 'overview') loadOverview();
+}
+
+// ══════════════════════════════════════════════
+//  API HELPER
+// ══════════════════════════════════════════════
+
+async function apiFetch(url, method = 'GET', body = null) {
+  const opts = {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(currentUser?.api_key ? { 'Authorization': 'Bearer ' + currentUser.api_key } : {})
+    }
+  };
+  if (body) opts.body = JSON.stringify(body);
+  try {
+    const r = await fetch(API + url, opts);
+    return await r.json();
+  } catch (e) {
+    return { error: 'Network error: ' + e.message };
+  }
+}
+
+// ══════════════════════════════════════════════
+//  AUTH
+// ══════════════════════════════════════════════
+
+async function register() {
+  const email = document.getElementById('regEmail').value.trim();
+  const password = document.getElementById('regPassword').value;
+  const errEl = document.getElementById('registerError');
+  const btn = document.getElementById('regBtn');
+
+  errEl.classList.remove('show');
+  if (!email || !password) { showAuthError('registerError', 'Fill in all fields'); return; }
+  if (password.length < 8) { showAuthError('registerError', 'Password must be at least 8 characters'); return; }
+
+  btn.disabled = true; btn.textContent = 'Creating account...';
+  const r = await apiFetch('/api/auth/register', 'POST', { email, password });
+  btn.disabled = false; btn.textContent = 'Create Account';
+
+  if (r.error) { showAuthError('registerError', r.error); return; }
+
+  currentUser = r;
+  localStorage.setItem('sw_user', JSON.stringify(r));
+  showToast('✅ Account created! Welcome to SecureWatch.', 'success');
+  goTo('dashboard');
+}
+
+async function loginUser() {
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const btn = document.getElementById('loginBtn');
+
+  if (!email || !password) { showAuthError('loginError', 'Fill in all fields'); return; }
+
+  btn.disabled = true; btn.textContent = 'Signing in...';
+  const r = await apiFetch('/api/auth/login', 'POST', { email, password });
+  btn.disabled = false; btn.textContent = 'Sign In';
+
+  if (r.error) { showAuthError('loginError', r.error); return; }
+
+  currentUser = r;
+  localStorage.setItem('sw_user', JSON.stringify(r));
+  showToast('✅ Welcome back!', 'success');
+  goTo('dashboard');
+}
+
+function logout() {
+  currentUser = null;
+  localStorage.removeItem('sw_user');
+  goTo('landing');
+}
+
+function showAuthError(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = '⚠ ' + msg;
+  el.classList.add('show');
+}
+
+// ══════════════════════════════════════════════
+//  DASHBOARD
+// ══════════════════════════════════════════════
+
+async function loadDashboard() {
+  if (!currentUser) return;
+  document.getElementById('sidebarEmail').textContent = currentUser.email;
+  document.getElementById('apiKeyDisplay').textContent = currentUser.api_key;
+  loadOverview();
+}
+
+async function refreshDashboard() {
+  if (currentSection === 'overview') loadOverview();
+  else if (currentSection === 'attempts') refreshAttempts();
+  else if (currentSection === 'accounts') loadAccounts();
+  else if (currentSection === 'blocked') refreshBlocked();
+}
+
+async function loadOverview() {
+  const data = await apiFetch('/api/dashboard');
+  if (data.error) { showToast('Error loading dashboard: ' + data.error, 'danger'); return; }
+
+  // Stats
+  document.getElementById('sv-total').textContent = data.stats.total_attempts;
+  document.getElementById('sv-failed').textContent = data.stats.failed_attempts;
+  document.getElementById('sv-blocked').textContent = data.stats.blocked_ips;
+  document.getElementById('sv-countries').textContent = data.stats.unique_countries;
+
+  // Country chart
+  const maxC = data.top_countries[0]?.attempts || 1;
+  document.getElementById('countryChart').innerHTML = data.top_countries.length ? data.top_countries.map(c => `
+    <div class="bar-row">
+      <div class="bar-label">${c.country || 'Unknown'}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.round(c.attempts/maxC*100)}%"></div></div>
+      <div class="bar-count">${c.attempts}</div>
+    </div>
+  `).join('') : '<div style="text-align:center;padding:24px;color:var(--dim);font-family:var(--mono);font-size:11px;">No data yet</div>';
+
+  // Week chart
+  const maxW = Math.max(...data.week_activity.map(w => w.attempts), 1);
+  document.getElementById('weekChart').innerHTML = data.week_activity.length ? data.week_activity.map(w => `
+    <div class="week-bar">
+      <div class="week-bar-fill" style="height:${Math.round(w.attempts/maxW*80)}px"></div>
+      <div class="week-bar-label">${w.date?.slice(5) || ''}</div>
+    </div>
+  `).join('') : '<div style="width:100%;text-align:center;color:var(--dim);font-family:var(--mono);font-size:11px;">No data</div>';
+
+  // Recent attempts
+  renderAttemptRows(data.recent_attempts, 'recentAttempts');
+}
+
+// ══════════════════════════════════════════════
+//  ATTEMPTS
+// ══════════════════════════════════════════════
+
+async function refreshAttempts() {
+  const data = await apiFetch('/api/attempts?limit=200');
+  if (data.error) { showToast('Error: ' + data.error, 'danger'); return; }
+  allAttemptsCache = data.attempts || [];
+  renderAttemptRows(allAttemptsCache, 'allAttempts');
+}
+
+function renderAttemptRows(attempts, tbodyId) {
+  const tbody = document.getElementById(tbodyId);
+  if (!attempts || attempts.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">🛡</div>No attempts recorded yet.<br><span style="font-size:10px;margin-top:8px;display:block">Once you integrate SecureWatch, login attempts will appear here.</span></div></td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = attempts.map((a, i) => `
+    <tr class="log-row ${a.status !== 'ALLOWED' ? 'row-danger' : ''}">
+      <td><span class="attempt-num">#${a.attempt_number || (attempts.length - i)}</span></td>
+      <td><span class="ip-chip" onclick="openReport('${a.id}')">${a.ip_address}</span></td>
+      <td>
+        <div class="loc-main">${a.city || '?'}, ${a.country || '?'}</div>
+        <div class="loc-isp">${a.isp || ''}</div>
+      </td>
+      <td>
+        <div class="device-info">${a.device_type || '?'} · ${a.browser_name || '?'}</div>
+        <div class="dev-os">${a.os_name || ''}</div>
+      </td>
+      <td><div class="time-cell">${formatTime(a.created_at)}</div></td>
+      <td><span class="status-chip st-${(a.status||'failed').toLowerCase()}">${a.status || 'FAILED'}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-warn btn-sm" onclick="openReport('${a.id}')">📋 Report</button>
+          <button class="btn btn-danger btn-sm" onclick="blockIpFromAttempt('${a.ip_address}','${a.account_id}')">🚫 Block</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function blockIpFromAttempt(ip, accountId) {
+  const r = await apiFetch('/api/block-ip', 'POST', { ip_address: ip, account_id: accountId, reason: 'Manually blocked from dashboard' });
+  if (r.error) { showToast('Error: ' + r.error, 'danger'); return; }
+  showToast('🚫 IP ' + ip + ' blocked!', 'success');
+  refreshAttempts();
+}
+
+function exportAll() {
+  if (!allAttemptsCache.length) { showToast('No attempts to export', 'info'); return; }
+  const csv = [
+    'Attempt#,IP Address,City,Country,ISP,Device,OS,Browser,Status,Time',
+    ...allAttemptsCache.map(a =>
+      `${a.attempt_number},"${a.ip_address}","${a.city}","${a.country}","${a.isp}","${a.device_type}","${a.os_name}","${a.browser_name}","${a.status}","${a.created_at}"`
+    )
+  ].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'securewatch-evidence-' + Date.now() + '.csv';
+  a.click();
+  showToast('📥 Evidence exported as CSV', 'success');
+}
+
+// ══════════════════════════════════════════════
+//  ACCOUNTS
+// ══════════════════════════════════════════════
+
+async function loadAccounts() {
+  const data = await apiFetch('/api/accounts');
+  accountsCache = data;
+  const el = document.getElementById('accountsList');
+
+  if (!data || data.error || data.length === 0) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">👤</div>No accounts monitored yet.<br><span style="font-size:12px;margin-top:8px;display:block">Add an account email above to start monitoring.</span></div>`;
+    return;
+  }
+
+  el.innerHTML = data.map(a => `
+    <div class="account-card">
+      <div class="account-avatar">👤</div>
+      <div class="account-info">
+        <div class="account-email">${a.account_email}</div>
+        <div class="account-name">${a.account_name || ''}</div>
+        <div class="account-id" onclick="copyToClip('${a.id}', 'Account ID copied!')" title="Click to copy Account ID">
+          Account ID: ${a.id} (click to copy — use in API calls)
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary btn-sm" onclick="viewAccountAttempts('${a.id}')">View Attempts</button>
+        <button class="btn btn-danger btn-sm" onclick="removeAccount('${a.id}')">Remove</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function addAccount() {
+  const email = document.getElementById('newAccountEmail').value.trim();
+  const name = document.getElementById('newAccountName').value.trim();
+  if (!email) { showToast('Enter an email address', 'danger'); return; }
+
+  const r = await apiFetch('/api/accounts', 'POST', { account_email: email, account_name: name });
+  if (r.error) { showToast('Error: ' + r.error, 'danger'); return; }
+  showToast('✅ Account added! Copy the Account ID to use in your API calls.', 'success');
+  document.getElementById('newAccountEmail').value = '';
+  document.getElementById('newAccountName').value = '';
+  loadAccounts();
+}
+
+async function removeAccount(id) {
+  if (!confirm('Remove this account from monitoring?')) return;
+  await apiFetch('/api/accounts/' + id, 'DELETE');
+  showToast('Account removed', 'info');
+  loadAccounts();
+}
+
+function viewAccountAttempts(accountId) {
+  showSection('attempts');
+  apiFetch('/api/attempts?account_id=' + accountId + '&limit=200').then(data => {
+    if (data.attempts) {
+      allAttemptsCache = data.attempts;
+      renderAttemptRows(data.attempts, 'allAttempts');
+    }
+  });
+}
+
+// ══════════════════════════════════════════════
+//  BLOCKED IPs
+// ══════════════════════════════════════════════
+
+async function refreshBlocked() {
+  const data = await apiFetch('/api/blocked-ips');
+  const el = document.getElementById('blockedList');
+
+  if (!data || data.error || data.length === 0) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🚫</div>No blocked IPs yet.</div>`;
+    return;
+  }
+
+  el.innerHTML = data.map(b => `
+    <div class="blocked-card">
+      <div>
+        <div class="blocked-ip-addr">🚫 ${b.ip_address}</div>
+        <div class="blocked-meta">${b.account_email} · ${b.reason} · ${b.is_permanent ? 'Permanent' : 'Expires: ' + formatTime(b.expires_at)}</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="unblockIp('${b.ip_address}','${b.account_id}')">Unblock</button>
+    </div>
+  `).join('');
+}
+
+async function unblockIp(ip, accountId) {
+  const r = await apiFetch('/api/unblock-ip', 'POST', { ip_address: ip, account_id: accountId });
+  if (r.error) { showToast('Error: ' + r.error, 'danger'); return; }
+  showToast('✅ IP ' + ip + ' unblocked', 'success');
+  refreshBlocked();
+}
+
+// ══════════════════════════════════════════════
+//  INTEGRATION
+// ══════════════════════════════════════════════
+
+function loadIntegration() {
+  const key = currentUser?.api_key || 'YOUR_API_KEY';
+  const accountId = accountsCache[0]?.id || 'YOUR_ACCOUNT_ID';
+  const base = window.location.origin;
+
+  document.getElementById('codePython').textContent =
+`import requests
+
+def report_login_attempt(ip, user_agent, status="FAILED"):
+    requests.post(
+        "${base}/api/report-attempt",
+        headers={"Authorization": "Bearer ${key}"},
+        json={
+            "account_id": "${accountId}",
+            "ip_address": ip,
+            "user_agent": user_agent,
+            "status": status
+        }
+    )
+
+# In your login route:
+@app.route("/login", methods=["POST"])
+def login():
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+    ua = request.headers.get("User-Agent", "")
+    # ... verify credentials ...
+    if not valid:
+        report_login_attempt(ip, ua, "FAILED")
+        return "Invalid credentials", 401
+    report_login_attempt(ip, ua, "ALLOWED")
+    return redirect("/dashboard")`;
+
+  document.getElementById('codeNode').textContent =
+`const axios = require('axios');
+
+async function reportAttempt(ip, userAgent, status = 'FAILED') {
+  await axios.post('${base}/api/report-attempt', {
+    account_id: '${accountId}',
+    ip_address: ip,
+    user_agent: userAgent,
+    status
+  }, {
+    headers: { Authorization: 'Bearer ${key}' }
+  });
+}
+
+// In your Express login route:
+app.post('/login', async (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.ip;
+  const ua = req.headers['user-agent'];
+  // ... verify credentials ...
+  if (!valid) {
+    await reportAttempt(ip, ua, 'FAILED');
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+  await reportAttempt(ip, ua, 'ALLOWED');
+  res.json({ success: true });
+});`;
+
+  document.getElementById('codePHP').textContent =
+`<?php
+function reportAttempt($ip, $userAgent, $status = 'FAILED') {
+    $ch = curl_init('${base}/api/report-attempt');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ${key}',
+            'Content-Type: application/json'
+        ],
+        CURLOPT_POSTFIELDS => json_encode([
+            'account_id' => '${accountId}',
+            'ip_address' => $ip,
+            'user_agent' => $userAgent,
+            'status' => $status
+        ])
+    ]);
+    curl_exec($ch);
+    curl_close($ch);
+}
+
+// In your login handler:
+$ip = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'];
+$ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+// ... verify credentials ...
+if (!$valid) {
+    reportAttempt($ip, $ua, 'FAILED');
+    http_response_code(401);
+    exit('Invalid credentials');
+}
+reportAttempt($ip, $ua, 'ALLOWED');`;
+}
+
+// ══════════════════════════════════════════════
+//  API KEYS
+// ══════════════════════════════════════════════
+
+function loadApiKey() {
+  document.getElementById('apiKeyDisplay').textContent = currentUser?.api_key || 'Not found';
+}
+
+function copyApiKey() {
+  copyToClip(currentUser?.api_key, 'API key copied!');
+}
+
+// ══════════════════════════════════════════════
+//  REPORT MODAL
+// ══════════════════════════════════════════════
+
+async function openReport(attemptId) {
+  const data = await apiFetch('/api/report/' + attemptId);
+  if (data.error) { showToast('Error loading report: ' + data.error, 'danger'); return; }
+
+  activeReportData = data;
+  const a = data.attempt;
+
+  document.getElementById('reportBody').innerHTML = `
+    <div class="report-disclaimer">
+      ⚠️ This is a forensic evidence report generated by SecureWatch. Submit it to your local cybercrime authority
+      along with a request to your account provider for their own login records. Law enforcement can legally
+      compel <strong>${a.isp}</strong> to reveal the subscriber behind IP <strong>${a.ip_address}</strong>.
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">📋 REPORT REFERENCE</div>
+      <div class="report-row"><span class="rk">Report ID</span><span class="rv">SW-${attemptId.slice(0,8).toUpperCase()}</span></div>
+      <div class="report-row"><span class="rk">Generated</span><span class="rv">${new Date().toLocaleString()}</span></div>
+      <div class="report-row"><span class="rk">Protected Account</span><span class="rv">${a.account_email}</span></div>
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">🔴 ATTACK DETAILS</div>
+      <div class="report-row"><span class="rk">Attempt Number</span><span class="rv danger">#${a.attempt_number}</span></div>
+      <div class="report-row"><span class="rk">Date & Time (UTC)</span><span class="rv danger">${a.created_at}</span></div>
+      <div class="report-row"><span class="rk">Status</span><span class="rv danger">${a.status}</span></div>
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">🌐 ATTACKER NETWORK INFO</div>
+      <div class="report-row"><span class="rk">IP Address</span><span class="rv accent">${a.ip_address}</span></div>
+      <div class="report-row"><span class="rk">City</span><span class="rv">${a.city || 'Unknown'}</span></div>
+      <div class="report-row"><span class="rk">Region</span><span class="rv">${a.region || 'Unknown'}</span></div>
+      <div class="report-row"><span class="rk">Country</span><span class="rv">${a.country || 'Unknown'}</span></div>
+      <div class="report-row"><span class="rk">ISP / Network</span><span class="rv accent">${a.isp || 'Unknown'}</span></div>
+      <div class="report-row"><span class="rk">Coordinates</span><span class="rv">${a.lat}, ${a.lon}</span></div>
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">💻 DEVICE FINGERPRINT</div>
+      <div class="report-row"><span class="rk">Device Type</span><span class="rv">${a.device_type}</span></div>
+      <div class="report-row"><span class="rk">Operating System</span><span class="rv">${a.os_name}</span></div>
+      <div class="report-row"><span class="rk">Browser / Client</span><span class="rv">${a.browser_name}</span></div>
+      <div class="report-row"><span class="rk">User-Agent</span><span class="rv" style="word-break:break-all;font-size:10px">${a.user_agent || 'Unknown'}</span></div>
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">⚖️ HOW TO FILE A COMPLAINT</div>
+      <div class="report-row"><span class="rk">India</span><span class="rv">cybercrime.gov.in → File Complaint</span></div>
+      <div class="report-row"><span class="rk">USA</span><span class="rv">ic3.gov (FBI Internet Crime)</span></div>
+      <div class="report-row"><span class="rk">UK</span><span class="rv">actionfraud.police.uk</span></div>
+      <div class="report-row"><span class="rk">Key Evidence</span><span class="rv danger">IP: ${a.ip_address} | ISP: ${a.isp} | ${a.created_at} UTC</span></div>
+      <div class="report-row"><span class="rk">Legal Basis (India)</span><span class="rv">IT Act 2000 §66 — Unauthorized Access to Computer</span></div>
+    </div>
+  `;
+
+  document.getElementById('reportModal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('reportModal').classList.remove('open');
+}
+
+document.getElementById('reportModal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+function copyReport() {
+  if (!activeReportData) return;
+  const a = activeReportData.attempt;
+  const text = `SECUREWATCH EVIDENCE REPORT
+===========================
+Report ID   : SW-${a.id?.slice(0,8).toUpperCase()}
+Generated   : ${new Date().toLocaleString()}
+Account     : ${a.account_email}
+
+ATTACK DETAILS
+Attempt     : #${a.attempt_number}
+Date/Time   : ${a.created_at} UTC
+Status      : ${a.status}
+
+ATTACKER NETWORK
+IP Address  : ${a.ip_address}
+Location    : ${a.city}, ${a.region}, ${a.country}
+ISP/Network : ${a.isp}
+Coordinates : ${a.lat}, ${a.lon}
+
+DEVICE FINGERPRINT
+Device      : ${a.device_type}
+OS          : ${a.os_name}
+Browser     : ${a.browser_name}
+User-Agent  : ${a.user_agent}
+
+WHERE TO COMPLAIN
+India    : cybercrime.gov.in
+USA      : ic3.gov
+UK       : actionfraud.police.uk
+
+KEY: Provide IP ${a.ip_address} + timestamp ${a.created_at} UTC to police.
+The ISP "${a.isp}" can be legally compelled to reveal the attacker's identity.
+
+Legal basis (India): IT Act 2000 Section 66 — Unauthorized Access
+===========================
+Generated by SecureWatch`;
+
+  navigator.clipboard.writeText(text).then(() => {
+    showToast('📋 Report copied! Paste into complaint form.', 'success');
+  }).catch(() => {
+    showToast('Could not copy — use Print instead', 'info');
+  });
+}
+
+// ══════════════════════════════════════════════
+//  UTILS
+// ══════════════════════════════════════════════
+
+function formatTime(ts) {
+  if (!ts) return '—';
+  try { return new Date(ts + (ts.endsWith('Z') ? '' : 'Z')).toLocaleString(); }
+  catch { return ts; }
+}
+
+function copyToClip(text, msg = 'Copied!') {
+  navigator.clipboard.writeText(text).then(() => showToast('📋 ' + msg, 'success')).catch(() => {});
+}
+
+function showToast(msg, type = 'info') {
+  const c = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = `toast toast-${type}`;
+  t.textContent = msg;
+  c.prepend(t);
+  setTimeout(() => { t.style.transition = 'opacity .4s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 400); }, 4500);
+}
+
+function animateCounters() {
+  function count(el, target, suffix='') {
+    let cur = 0;
+    const step = Math.ceil(target / 60);
+    const iv = setInterval(() => {
+      cur = Math.min(cur + step, target);
+      el.textContent = cur.toLocaleString() + suffix;
+      if (cur >= target) clearInterval(iv);
+    }, 25);
+  }
+  setTimeout(() => {
+    count(document.getElementById('counterAttempts'), 48291);
+    count(document.getElementById('counterUsers'), 3874);
+    count(document.getElementById('counterCountries'), 67);
+  }, 400);
+}
+</script>
+</body>
+</html>

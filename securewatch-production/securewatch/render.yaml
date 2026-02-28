@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: securewatch
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: >
+      python -c "import sys; sys.path.insert(0,'backend'); from app import init_db; init_db()" &&
+      gunicorn --chdir backend app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FLASK_ENV
+        value: production
+      - key: DATABASE_PATH
+        value: /opt/render/project/src/securewatch.db
+      - key: IPINFO_TOKEN
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: "*"
+    disk:
+      name: db
+      mountPath: /opt/render/project/src
+      sizeGB: 1

@@ -1,0 +1,1555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SecureWatch — Login Threat Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #020b12;
+    --bg2: #030f1a;
+    --panel: #041424;
+    --panel2: #051828;
+    --border: #0a3a5a;
+    --border2: #0d4f7a;
+    --accent: #00d4ff;
+    --accent2: #00ff9d;
+    --danger: #ff3c3c;
+    --warn: #ffaa00;
+    --text: #c8e8f8;
+    --dim: #4a7a9b;
+    --mono: 'Share Tech Mono', monospace;
+    --head: 'Orbitron', sans-serif;
+    --body: 'Rajdhani', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--body);
+    font-size: 15px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Animated grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(ellipse at 30% 20%, rgba(0,80,180,0.08) 0%, transparent 60%),
+                radial-gradient(ellipse at 70% 80%, rgba(0,212,255,0.05) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+    animation: bgpulse 8s ease-in-out infinite alternate;
+  }
+
+  @keyframes bgpulse {
+    from { opacity: 0.5; }
+    to { opacity: 1; }
+  }
+
+  .container { position: relative; z-index: 1; padding: 0 24px 40px; max-width: 1400px; margin: 0 auto; }
+
+  /* ─── HEADER ─── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 0 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 28px;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .logo-icon {
+    width: 44px; height: 44px;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+    box-shadow: 0 0 16px rgba(0,212,255,0.3), inset 0 0 10px rgba(0,212,255,0.05);
+    animation: iconpulse 2s ease-in-out infinite;
+  }
+
+  @keyframes iconpulse {
+    0%,100% { box-shadow: 0 0 16px rgba(0,212,255,0.3), inset 0 0 10px rgba(0,212,255,0.05); }
+    50% { box-shadow: 0 0 28px rgba(0,212,255,0.6), inset 0 0 16px rgba(0,212,255,0.1); }
+  }
+
+  .logo-text h1 {
+    font-family: var(--head);
+    font-size: 20px;
+    font-weight: 900;
+    letter-spacing: 3px;
+    color: var(--accent);
+    text-shadow: 0 0 20px rgba(0,212,255,0.5);
+  }
+
+  .logo-text p {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 2px;
+    margin-top: 2px;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border: 1px solid var(--accent2);
+    border-radius: 20px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent2);
+    text-shadow: 0 0 8px rgba(0,255,157,0.4);
+  }
+
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent2);
+    box-shadow: 0 0 8px var(--accent2);
+    animation: blink 1.2s ease-in-out infinite;
+  }
+
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .clock {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--dim);
+    letter-spacing: 1px;
+  }
+
+  /* ─── STATS ROW ─── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .stat-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.3s;
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    border-radius: 10px 10px 0 0;
+  }
+
+  .stat-card.blue::before { background: linear-gradient(90deg, transparent, var(--accent), transparent); }
+  .stat-card.green::before { background: linear-gradient(90deg, transparent, var(--accent2), transparent); }
+  .stat-card.red::before { background: linear-gradient(90deg, transparent, var(--danger), transparent); }
+  .stat-card.yellow::before { background: linear-gradient(90deg, transparent, var(--warn), transparent); }
+
+  .stat-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  .stat-value {
+    font-family: var(--head);
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .stat-card.blue .stat-value { color: var(--accent); text-shadow: 0 0 16px rgba(0,212,255,0.4); }
+  .stat-card.green .stat-value { color: var(--accent2); text-shadow: 0 0 16px rgba(0,255,157,0.4); }
+  .stat-card.red .stat-value { color: var(--danger); text-shadow: 0 0 16px rgba(255,60,60,0.4); }
+  .stat-card.yellow .stat-value { color: var(--warn); text-shadow: 0 0 16px rgba(255,170,0,0.4); }
+
+  .stat-sub {
+    font-size: 12px;
+    color: var(--dim);
+    margin-top: 6px;
+  }
+
+  /* ─── MAIN GRID ─── */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 20px;
+  }
+
+  /* ─── PANEL ─── */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel2);
+  }
+
+  .panel-title {
+    font-family: var(--head);
+    font-size: 12px;
+    letter-spacing: 2px;
+    color: var(--accent);
+  }
+
+  .panel-badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    border: 1px solid;
+  }
+
+  .badge-live { color: var(--danger); border-color: var(--danger); animation: blink 1s infinite; }
+  .badge-info { color: var(--dim); border-color: var(--border2); }
+
+  /* ─── CONTROLS ─── */
+  .controls {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    padding: 8px 18px;
+    border-radius: 6px;
+    border: 1px solid;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 1px;
+    transition: all 0.2s;
+    text-transform: uppercase;
+  }
+
+  .btn-primary {
+    background: rgba(0,212,255,0.1);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: rgba(0,212,255,0.2);
+    box-shadow: 0 0 16px rgba(0,212,255,0.3);
+  }
+
+  .btn-danger {
+    background: rgba(255,60,60,0.1);
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+
+  .btn-danger:hover {
+    background: rgba(255,60,60,0.2);
+    box-shadow: 0 0 16px rgba(255,60,60,0.3);
+  }
+
+  .btn-success {
+    background: rgba(0,255,157,0.1);
+    border-color: var(--accent2);
+    color: var(--accent2);
+  }
+
+  .btn-success:hover {
+    background: rgba(0,255,157,0.2);
+    box-shadow: 0 0 16px rgba(0,255,157,0.3);
+  }
+
+  .btn-warn {
+    background: rgba(255,170,0,0.1);
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+
+  .btn-warn:hover {
+    background: rgba(255,170,0,0.2);
+    box-shadow: 0 0 16px rgba(255,170,0,0.3);
+  }
+
+  /* ─── ATTEMPT LOG TABLE ─── */
+  .log-table { width: 100%; border-collapse: collapse; }
+
+  .log-table th {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    color: var(--dim);
+    text-align: left;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(0,0,0,0.2);
+    text-transform: uppercase;
+  }
+
+  .log-row {
+    border-bottom: 1px solid rgba(10,58,90,0.4);
+    transition: background 0.2s;
+    animation: rowslide 0.4s ease-out;
+  }
+
+  @keyframes rowslide {
+    from { opacity: 0; transform: translateX(-10px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .log-row:hover { background: rgba(0,212,255,0.04); }
+
+  .log-row.danger-row { background: rgba(255,60,60,0.04); }
+  .log-row.danger-row:hover { background: rgba(255,60,60,0.08); }
+
+  .log-row td {
+    padding: 12px 16px;
+    font-size: 13px;
+    vertical-align: middle;
+  }
+
+  .attempt-num {
+    font-family: var(--head);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--danger);
+    text-shadow: 0 0 8px rgba(255,60,60,0.4);
+    min-width: 40px;
+    display: inline-block;
+    text-align: center;
+  }
+
+  .ip-tag {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: rgba(0,212,255,0.08);
+    border: 1px solid rgba(0,212,255,0.2);
+    padding: 3px 10px;
+    border-radius: 4px;
+    color: var(--accent);
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .ip-tag:hover {
+    background: rgba(0,212,255,0.15);
+    box-shadow: 0 0 10px rgba(0,212,255,0.2);
+  }
+
+  .status-badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+
+  .status-fail { color: var(--danger); border-color: var(--danger); background: rgba(255,60,60,0.08); }
+  .status-block { color: var(--warn); border-color: var(--warn); background: rgba(255,170,0,0.08); }
+  .status-ok { color: var(--accent2); border-color: var(--accent2); background: rgba(0,255,157,0.08); }
+
+  .location-text { color: var(--text); font-size: 13px; }
+  .isp-text { color: var(--dim); font-size: 11px; font-family: var(--mono); margin-top: 2px; }
+
+  .device-icon { font-size: 16px; margin-right: 6px; }
+
+  .time-text {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+
+  .action-btns { display: flex; gap: 6px; }
+
+  .mini-btn {
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid;
+    cursor: pointer;
+    font-size: 10px;
+    font-family: var(--mono);
+    transition: all 0.2s;
+  }
+
+  .mini-block { color: var(--danger); border-color: var(--danger); background: transparent; }
+  .mini-block:hover { background: rgba(255,60,60,0.15); }
+  .mini-report { color: var(--warn); border-color: var(--warn); background: transparent; }
+  .mini-report:hover { background: rgba(255,170,0,0.15); }
+
+  /* ─── RIGHT PANEL ─── */
+  .right-col { display: flex; flex-direction: column; gap: 20px; }
+
+  /* ─── LIVE ALERT ─── */
+  .alert-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .alert-content { padding: 20px; }
+
+  .alert-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .live-alert {
+    display: none;
+    animation: alertpop 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+
+  @keyframes alertpop {
+    from { opacity:0; transform: scale(0.9); }
+    to { opacity:1; transform: scale(1); }
+  }
+
+  .alert-number {
+    font-family: var(--head);
+    font-size: 64px;
+    font-weight: 900;
+    color: var(--danger);
+    text-shadow: 0 0 30px rgba(255,60,60,0.6);
+    text-align: center;
+    line-height: 1;
+    animation: numflash 0.5s ease-in-out;
+  }
+
+  @keyframes numflash {
+    0%,100%{transform:scale(1)} 50%{transform:scale(1.1)}
+  }
+
+  .alert-label {
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--danger);
+    letter-spacing: 3px;
+    margin-bottom: 20px;
+  }
+
+  .alert-detail {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--border2);
+    border-radius: 8px;
+    padding: 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 2;
+  }
+
+  .detail-row { display: flex; justify-content: space-between; align-items: center; }
+  .detail-key { color: var(--dim); }
+  .detail-val { color: var(--text); font-size: 13px; }
+  .detail-val.highlight { color: var(--accent); }
+  .detail-val.danger { color: var(--danger); }
+
+  /* ─── BLOCKED IPs ─── */
+  .blocked-list { padding: 12px; }
+
+  .blocked-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    background: rgba(255,60,60,0.05);
+    border: 1px solid rgba(255,60,60,0.2);
+    border-radius: 6px;
+    animation: rowslide 0.3s ease-out;
+  }
+
+  .blocked-ip { font-family: var(--mono); font-size: 12px; color: var(--danger); }
+  .blocked-loc { font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+  .unblock-btn {
+    background: none;
+    border: 1px solid var(--dim);
+    color: var(--dim);
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 10px;
+    font-family: var(--mono);
+    transition: all 0.2s;
+  }
+
+  .unblock-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+
+  .empty-msg {
+    text-align: center;
+    padding: 24px;
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  /* ─── MAP VISUALIZATION ─── */
+  .map-panel { padding: 16px; }
+
+  .world-map {
+    position: relative;
+    background: rgba(0,30,50,0.5);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    height: 180px;
+    overflow: hidden;
+    margin-bottom: 12px;
+    font-size: 90px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(0,212,255,0.15);
+  }
+
+  .map-dot {
+    position: absolute;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 12px var(--danger);
+    animation: dotpulse 1.5s ease-out infinite;
+  }
+
+  @keyframes dotpulse {
+    0% { transform: scale(1); opacity: 1; }
+    100% { transform: scale(3); opacity: 0; }
+  }
+
+  .map-dot::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    border: 1px solid var(--danger);
+    animation: dotpulse 1.5s ease-out infinite;
+  }
+
+  .map-origin {
+    position: absolute;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent2);
+    box-shadow: 0 0 12px var(--accent2);
+  }
+
+  /* ─── PDF REPORT MODAL ─── */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+  }
+
+  .modal-overlay.open { display: flex; }
+
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--border2);
+    border-radius: 14px;
+    width: 90%;
+    max-width: 700px;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 0 60px rgba(0,212,255,0.1);
+    animation: modalin 0.3s ease-out;
+  }
+
+  @keyframes modalin {
+    from { opacity:0; transform: translateY(20px) scale(0.97); }
+    to { opacity:1; transform: translateY(0) scale(1); }
+  }
+
+  .modal-head {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .modal-title {
+    font-family: var(--head);
+    font-size: 14px;
+    letter-spacing: 2px;
+    color: var(--accent);
+  }
+
+  .modal-close {
+    background: none;
+    border: 1px solid var(--border2);
+    color: var(--dim);
+    width: 32px; height: 32px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.2s;
+  }
+
+  .modal-close:hover { border-color: var(--danger); color: var(--danger); }
+
+  .report-body { padding: 24px; }
+
+  .report-section {
+    margin-bottom: 24px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .report-section-title {
+    padding: 10px 16px;
+    background: rgba(0,212,255,0.05);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 2px;
+  }
+
+  .report-row {
+    display: flex;
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(10,58,90,0.3);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .report-row:last-child { border-bottom: none; }
+  .report-key { color: var(--dim); width: 180px; flex-shrink: 0; }
+  .report-val { color: var(--text); }
+  .report-val.warn { color: var(--danger); }
+
+  .report-disclaimer {
+    background: rgba(255,170,0,0.05);
+    border: 1px solid rgba(255,170,0,0.2);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-size: 12px;
+    color: var(--warn);
+    line-height: 1.7;
+    margin-bottom: 20px;
+  }
+
+  .modal-footer {
+    padding: 16px 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+  }
+
+  /* ─── TOAST ─── */
+  .toast-container {
+    position: fixed;
+    top: 24px;
+    right: 24px;
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .toast {
+    padding: 14px 20px;
+    border-radius: 8px;
+    border: 1px solid;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    animation: toastin 0.3s ease-out;
+    max-width: 340px;
+    backdrop-filter: blur(10px);
+  }
+
+  @keyframes toastin {
+    from { opacity:0; transform: translateX(20px); }
+    to { opacity:1; transform: translateX(0); }
+  }
+
+  .toast-danger {
+    background: rgba(20,5,5,0.9);
+    border-color: var(--danger);
+    color: var(--danger);
+    box-shadow: 0 0 20px rgba(255,60,60,0.2);
+  }
+
+  .toast-success {
+    background: rgba(5,20,15,0.9);
+    border-color: var(--accent2);
+    color: var(--accent2);
+    box-shadow: 0 0 20px rgba(0,255,157,0.2);
+  }
+
+  .toast-info {
+    background: rgba(5,15,20,0.9);
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 20px rgba(0,212,255,0.2);
+  }
+
+  /* ─── SCROLLBAR ─── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+  .table-scroll { max-height: 420px; overflow-y: auto; }
+
+  /* ─── SCAN LINE EFFECT ─── */
+  .scanline {
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    z-index: 999;
+  }
+
+  /* ─── PROTECTED ACCOUNT SECTION ─── */
+  .account-box {
+    padding: 16px 20px;
+    background: rgba(0,255,157,0.03);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .account-avatar {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #00d4ff22, #00ff9d22);
+    border: 2px solid var(--accent2);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+
+  .account-info .acct-email {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent2);
+  }
+
+  .account-info .acct-label {
+    font-size: 11px;
+    color: var(--dim);
+    margin-top: 2px;
+  }
+
+  .no-attempts {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 1px;
+  }
+
+  /* ─── SIMULATE SECTION ─── */
+  .simulate-section {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-left: auto;
+  }
+
+  .simulate-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+
+<div class="scanline"></div>
+
+<!-- TOAST CONTAINER -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- REPORT MODAL -->
+<div class="modal-overlay" id="reportModal">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title">📋 CYBER COMPLAINT EVIDENCE REPORT</span>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="report-body" id="reportBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="printReport()">🖨 Print / Save PDF</button>
+      <button class="btn btn-warn" onclick="copyReport()">📋 Copy for Complaint</button>
+      <button class="btn btn-danger" onclick="closeModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- HEADER -->
+  <header>
+    <div class="logo">
+      <div class="logo-icon">🛡</div>
+      <div class="logo-text">
+        <h1>SECUREWATCH</h1>
+        <p>UNAUTHORIZED ACCESS DETECTION SYSTEM v2.0</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="status-pill">
+        <div class="status-dot"></div>
+        MONITORING ACTIVE
+      </div>
+      <div class="clock" id="clock">--:--:--</div>
+    </div>
+  </header>
+
+  <!-- STATS ROW -->
+  <div class="stats-row">
+    <div class="stat-card blue">
+      <div class="stat-label">⚡ Total Attempts</div>
+      <div class="stat-value" id="statTotal">0</div>
+      <div class="stat-sub">Since monitoring began</div>
+    </div>
+    <div class="stat-card red">
+      <div class="stat-label">🚨 Failed Logins</div>
+      <div class="stat-value" id="statFailed">0</div>
+      <div class="stat-sub">Unauthorized attempts</div>
+    </div>
+    <div class="stat-card yellow">
+      <div class="stat-label">🚫 Blocked IPs</div>
+      <div class="stat-value" id="statBlocked">0</div>
+      <div class="stat-sub">Currently blacklisted</div>
+    </div>
+    <div class="stat-card green">
+      <div class="stat-label">🌍 Countries</div>
+      <div class="stat-value" id="statCountries">0</div>
+      <div class="stat-sub">Unique attack origins</div>
+    </div>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="main-grid">
+
+    <!-- LEFT: ATTEMPT LOG -->
+    <div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">🔴 LIVE LOGIN ATTEMPT LOG</span>
+          <span class="panel-badge badge-live">● LIVE</span>
+        </div>
+
+        <!-- Protected account -->
+        <div class="account-box">
+          <div class="account-avatar">👤</div>
+          <div class="account-info">
+            <div class="acct-email" id="protectedEmail">yourname@gmail.com</div>
+            <div class="acct-label">🔒 Protected Account · Main Device: Windows 11 · Chrome</div>
+          </div>
+          <div style="margin-left:auto;">
+            <button class="btn btn-success" onclick="changeEmail()">⚙ Configure</button>
+          </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+          <button class="btn btn-danger" onclick="simulateAttack()">⚡ Simulate Attack</button>
+          <button class="btn btn-warn" onclick="simulateBurst()">💥 Simulate Burst (5x)</button>
+          <button class="btn btn-primary" onclick="exportAllReports()">📥 Export All Evidence</button>
+          <button class="btn btn-danger" onclick="clearLog()" style="margin-left:auto;">🗑 Clear Log</button>
+        </div>
+
+        <!-- Table -->
+        <div class="table-scroll">
+          <table class="log-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>IP Address</th>
+                <th>Location / ISP</th>
+                <th>Device</th>
+                <th>Time</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="attemptLog">
+              <tr>
+                <td colspan="7">
+                  <div class="no-attempts">
+                    🛡 No unauthorized attempts detected<br>
+                    <span style="font-size:10px;margin-top:8px;display:block;">Click "Simulate Attack" to test the system</span>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div class="right-col">
+
+      <!-- LIVE ALERT BOX -->
+      <div class="alert-box">
+        <div class="panel-header">
+          <span class="panel-title">🚨 REAL-TIME ALERT</span>
+          <span class="panel-badge badge-live" id="alertBadge" style="display:none">● NEW</span>
+        </div>
+        <div class="alert-content">
+          <div class="alert-empty" id="alertEmpty">
+            🟢 No active threats<br>
+            <span style="font-size:10px;margin-top:6px;display:block;">System monitoring your account...</span>
+          </div>
+          <div class="live-alert" id="liveAlert">
+            <div class="alert-number" id="alertNum">0</div>
+            <div class="alert-label">LOGIN ATTEMPT(S) DETECTED</div>
+            <div class="alert-detail" id="alertDetail"></div>
+            <div style="display:flex;gap:8px;margin-top:14px;">
+              <button class="btn btn-danger" style="flex:1;font-size:10px" onclick="blockCurrentAlert()">🚫 Block IP</button>
+              <button class="btn btn-warn" style="flex:1;font-size:10px" onclick="reportCurrentAlert()">📋 Generate Report</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ATTACK MAP -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">🌍 ATTACK ORIGIN MAP</span>
+          <span class="panel-badge badge-info">SIMULATION</span>
+        </div>
+        <div class="map-panel">
+          <div class="world-map" id="worldMap">
+            🌍
+            <div class="map-origin" style="bottom:40%;right:35%" title="Your Location"></div>
+          </div>
+          <div id="originList" style="font-family:var(--mono);font-size:11px;color:var(--dim);">
+            No attack origins detected yet.
+          </div>
+        </div>
+      </div>
+
+      <!-- BLOCKED IPs -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">🚫 BLOCKED IP LIST</span>
+          <span class="panel-badge badge-info" id="blockedCount">0 BLOCKED</span>
+        </div>
+        <div class="blocked-list" id="blockedList">
+          <div class="empty-msg">No IPs blocked yet</div>
+        </div>
+      </div>
+
+      <!-- DEEP SYSTEM SCAN -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">🔍 DEEP EMAIL & SYSTEM SCAN</span>
+          <span class="panel-badge badge-live" style="color:var(--accent);border-color:var(--accent);animation:none;">STANDBY</span>
+        </div>
+        <div style="padding:16px;">
+          <p style="font-family:var(--mono);font-size:11px;color:var(--dim);margin-bottom:12px;line-height:1.4;">Enter an Email ID or IP Address to trace their history, network interactions, and vulnerable domain access.</p>
+          <div style="display:flex;gap:8px;margin-bottom:14px;">
+            <input type="text" id="scanEmail" placeholder="target@email.com or 192.168.1.1" style="flex:1;background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+            <button class="btn btn-primary" onclick="runDeepScan()">▶ RUN SCAN</button>
+          </div>
+          
+          <div id="scanConsole" style="background:rgba(0,0,0,0.5);border:1px solid var(--border2);border-radius:6px;padding:12px;font-family:var(--mono);font-size:11px;color:var(--accent2);height:140px;overflow-y:auto;display:none;flex-direction:column;gap:6px;">
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+//  DATA
+// ─────────────────────────────────────────────
+
+const FAKE_ATTACKERS = [
+  { ip: '103.21.58.74',  city: 'New Delhi',    country: 'India 🇮🇳',    isp: 'Airtel Broadband', os: 'Windows 10',   browser: 'Chrome 121',  device: '🖥 Desktop' },
+  { ip: '185.220.101.45',city: 'Moscow',       country: 'Russia 🇷🇺',   isp: 'Rostelecom',       os: 'Windows 11',   browser: 'Firefox 122', device: '🖥 Desktop' },
+  { ip: '45.86.201.17',  city: 'Beijing',      country: 'China 🇨🇳',    isp: 'China Telecom',    os: 'Windows 7',    browser: 'IE 11',       device: '🖥 Desktop' },
+  { ip: '91.108.4.212',  city: 'Frankfurt',    country: 'Germany 🇩🇪',  isp: 'Hetzner Online',  os: 'Ubuntu Linux', browser: 'curl/7.88',   device: '🤖 Bot/Script' },
+  { ip: '196.207.128.10',city: 'Lagos',        country: 'Nigeria 🇳🇬',  isp: 'MTN Nigeria',      os: 'Android 12',   browser: 'Chrome Mobile',device:'📱 Mobile' },
+  { ip: '121.244.37.89', city: 'Shanghai',     country: 'China 🇨🇳',    isp: 'China Unicom',     os: 'Windows 10',   browser: 'Edge 120',    device: '🖥 Desktop' },
+  { ip: '77.88.55.77',   city: 'Kyiv',         country: 'Ukraine 🇺🇦',  isp: 'Kyivstar',         os: 'macOS 14',     browser: 'Safari 17',   device: '💻 Laptop' },
+  { ip: '5.188.86.195',  city: 'Amsterdam',    country: 'Netherlands 🇳🇱',isp:'DigitalOcean VPS', os: 'Debian Linux', browser: 'Python/3.11', device: '🤖 Bot/Script' },
+  { ip: '36.77.201.54',  city: 'Jakarta',      country: 'Indonesia 🇮🇩', isp: 'Telkomsel',        os: 'Android 13',   browser: 'Chrome Mobile',device:'📱 Mobile' },
+  { ip: '197.210.65.33', city: 'Nairobi',      country: 'Kenya 🇰🇪',    isp: 'Safaricom 4G',     os: 'iOS 17',       browser: 'Safari Mobile',device:'📱 Mobile' },
+];
+
+const STATUS_TYPES = ['FAILED', 'FAILED', 'FAILED', 'BLOCKED', 'FAILED'];
+
+let attempts = [];
+let blockedIPs = new Set();
+let attemptCounter = 0;
+let currentAlertData = null;
+
+// ─────────────────────────────────────────────
+//  CLOCK
+// ─────────────────────────────────────────────
+
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent = now.toLocaleTimeString('en-IN', {hour12:false});
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ─────────────────────────────────────────────
+//  SIMULATE ATTACK
+// ─────────────────────────────────────────────
+
+function simulateAttack() {
+  const attacker = FAKE_ATTACKERS[Math.floor(Math.random() * FAKE_ATTACKERS.length)];
+  const status = blockedIPs.has(attacker.ip) ? 'BLOCKED' : 'FAILED';
+  const now = new Date();
+
+  attemptCounter++;
+
+  const attempt = {
+    num: attemptCounter,
+    ...attacker,
+    status,
+    time: now,
+    timeStr: now.toLocaleString('en-IN', {dateStyle:'short', timeStyle:'medium'}),
+    reportGenerated: false,
+  };
+
+  attempts.unshift(attempt);
+  currentAlertData = attempt;
+
+  updateTable();
+  updateStats();
+  updateAlert(attempt);
+  updateMap(attacker);
+  updateOriginList();
+
+  // Flash toast notification
+  showToast(`🚨 LOGIN ATTEMPT #${attemptCounter} FROM ${attacker.city}, ${attacker.country} — IP: ${attacker.ip}`, 'danger');
+}
+
+function simulateBurst() {
+  let delay = 0;
+  for (let i = 0; i < 5; i++) {
+    setTimeout(simulateAttack, delay);
+    delay += 600;
+  }
+}
+
+// ─────────────────────────────────────────────
+//  TABLE
+// ─────────────────────────────────────────────
+
+function updateTable() {
+  const tbody = document.getElementById('attemptLog');
+
+  if (attempts.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7"><div class="no-attempts">🛡 No unauthorized attempts detected<br><span style="font-size:10px;margin-top:8px;display:block;">Click "Simulate Attack" to test the system</span></div></td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = attempts.map(a => `
+    <tr class="log-row ${a.status==='FAILED'?'danger-row':''}">
+      <td><span class="attempt-num">#${a.num}</span></td>
+      <td>
+        <span class="ip-tag" onclick="showReport(${a.num-1})" title="Click to view full report">${a.ip}</span>
+      </td>
+      <td>
+        <div class="location-text">${a.city}, ${a.country}</div>
+        <div class="isp-text">${a.isp}</div>
+      </td>
+      <td>
+        <span class="device-icon">${a.device.split(' ')[0]}</span>
+        <span style="font-size:12px">${a.os}</span><br>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">${a.browser}</span>
+      </td>
+      <td><div class="time-text">${a.timeStr}</div></td>
+      <td>
+        <span class="status-badge ${a.status==='FAILED'?'status-fail':a.status==='BLOCKED'?'status-block':'status-ok'}">
+          ${a.status==='FAILED'?'⛔ FAILED':a.status==='BLOCKED'?'🚫 BLOCKED':'✅ ALLOWED'}
+        </span>
+      </td>
+      <td>
+        <div class="action-btns">
+          <button class="mini-btn mini-block" onclick="blockIP('${a.ip}', '${a.city}', '${a.country}')">🚫 Block</button>
+          <button class="mini-btn mini-report" onclick="showReport(${a.num-1})">📋 Report</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ─────────────────────────────────────────────
+//  STATS
+// ─────────────────────────────────────────────
+
+function updateStats() {
+  document.getElementById('statTotal').textContent = attempts.length;
+  document.getElementById('statFailed').textContent = attempts.filter(a => a.status === 'FAILED').length;
+  document.getElementById('statBlocked').textContent = blockedIPs.size;
+  const countries = new Set(attempts.map(a => a.country));
+  document.getElementById('statCountries').textContent = countries.size;
+}
+
+// ─────────────────────────────────────────────
+//  ALERT BOX
+// ─────────────────────────────────────────────
+
+function updateAlert(attempt) {
+  const total = attempts.length;
+  document.getElementById('alertEmpty').style.display = 'none';
+  const la = document.getElementById('liveAlert');
+  la.style.display = 'block';
+
+  document.getElementById('alertNum').textContent = total;
+  document.getElementById('alertBadge').style.display = 'inline';
+
+  document.getElementById('alertDetail').innerHTML = `
+    <div class="detail-row"><span class="detail-key">IP ADDRESS</span><span class="detail-val highlight">${attempt.ip}</span></div>
+    <div class="detail-row"><span class="detail-key">LOCATION</span><span class="detail-val">${attempt.city}, ${attempt.country}</span></div>
+    <div class="detail-row"><span class="detail-key">ISP / NETWORK</span><span class="detail-val">${attempt.isp}</span></div>
+    <div class="detail-row"><span class="detail-key">DEVICE</span><span class="detail-val">${attempt.device} · ${attempt.os}</span></div>
+    <div class="detail-row"><span class="detail-key">BROWSER</span><span class="detail-val">${attempt.browser}</span></div>
+    <div class="detail-row"><span class="detail-key">STATUS</span><span class="detail-val danger">${attempt.status}</span></div>
+    <div class="detail-row"><span class="detail-key">TIME</span><span class="detail-val">${attempt.timeStr}</span></div>
+  `;
+}
+
+// ─────────────────────────────────────────────
+//  BLOCK IP
+// ─────────────────────────────────────────────
+
+function blockIP(ip, city, country) {
+  if (blockedIPs.has(ip)) {
+    showToast(`⚠ IP ${ip} is already blocked`, 'info');
+    return;
+  }
+  blockedIPs.add(ip);
+
+  // Update blocked list
+  const bl = document.getElementById('blockedList');
+  const empty = bl.querySelector('.empty-msg');
+  if (empty) empty.remove();
+
+  const item = document.createElement('div');
+  item.className = 'blocked-item';
+  item.id = 'blocked_' + ip.replace(/\./g,'_');
+  item.innerHTML = `
+    <div>
+      <div class="blocked-ip">🚫 ${ip}</div>
+      <div class="blocked-loc">${city}, ${country}</div>
+    </div>
+    <button class="unblock-btn" onclick="unblockIP('${ip}', this.closest('.blocked-item'))">Unblock</button>
+  `;
+  bl.prepend(item);
+
+  // Update attempts that have this IP to BLOCKED
+  attempts.forEach(a => { if (a.ip === ip) a.status = 'BLOCKED'; });
+
+  document.getElementById('blockedCount').textContent = blockedIPs.size + ' BLOCKED';
+  updateStats();
+  updateTable();
+  showToast(`🚫 IP ${ip} (${city}) has been BLOCKED`, 'success');
+}
+
+function unblockIP(ip, el) {
+  blockedIPs.delete(ip);
+  el.remove();
+  if (blockedIPs.size === 0) {
+    document.getElementById('blockedList').innerHTML = '<div class="empty-msg">No IPs blocked yet</div>';
+  }
+  document.getElementById('blockedCount').textContent = blockedIPs.size + ' BLOCKED';
+  updateStats();
+  showToast(`✅ IP ${ip} has been unblocked`, 'info');
+}
+
+function blockCurrentAlert() {
+  if (currentAlertData) blockIP(currentAlertData.ip, currentAlertData.city, currentAlertData.country);
+}
+
+// ─────────────────────────────────────────────
+//  MAP
+// ─────────────────────────────────────────────
+
+const mapPositions = {
+  'India 🇮🇳':       { top: '38%', left: '65%' },
+  'Russia 🇷🇺':      { top: '20%', left: '60%' },
+  'China 🇨🇳':       { top: '32%', left: '73%' },
+  'Germany 🇩🇪':     { top: '24%', left: '50%' },
+  'Nigeria 🇳🇬':     { top: '48%', left: '48%' },
+  'Ukraine 🇺🇦':     { top: '26%', left: '56%' },
+  'Netherlands 🇳🇱': { top: '23%', left: '49%' },
+  'Indonesia 🇮🇩':   { top: '52%', left: '76%' },
+  'Kenya 🇰🇪':       { top: '50%', left: '56%' },
+};
+
+const placedDots = new Set();
+
+function updateMap(attacker) {
+  const map = document.getElementById('worldMap');
+  const pos = mapPositions[attacker.country];
+  if (!pos || placedDots.has(attacker.country)) return;
+  placedDots.add(attacker.country);
+
+  const dot = document.createElement('div');
+  dot.className = 'map-dot';
+  dot.style.top = pos.top;
+  dot.style.left = pos.left;
+  dot.title = attacker.city + ', ' + attacker.country;
+  map.appendChild(dot);
+}
+
+function updateOriginList() {
+  const countries = [...new Set(attempts.map(a => a.country))];
+  const ol = document.getElementById('originList');
+  if (countries.length === 0) {
+    ol.textContent = 'No attack origins detected yet.';
+    return;
+  }
+  ol.innerHTML = countries.map(c => {
+    const count = attempts.filter(a => a.country === c).length;
+    return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(10,58,90,0.3)">
+      <span>${c}</span><span style="color:var(--danger)">${count} attempt${count>1?'s':''}</span>
+    </div>`;
+  }).join('');
+}
+
+// ─────────────────────────────────────────────
+//  REPORT MODAL
+// ─────────────────────────────────────────────
+
+let activeReportAttempt = null;
+
+function showReport(idx) {
+  // idx is num-1, but attempts are unshifted so index 0 = latest
+  // Find by num
+  const attempt = attempts.find(a => a.num === idx + 1) || attempts[0];
+  activeReportAttempt = attempt;
+  openReportModal(attempt);
+}
+
+function reportCurrentAlert() {
+  if (currentAlertData) openReportModal(currentAlertData);
+}
+
+function openReportModal(attempt) {
+  activeReportAttempt = attempt;
+  const body = document.getElementById('reportBody');
+
+  body.innerHTML = `
+    <div class="report-disclaimer">
+      ⚠️ This evidence report is auto-generated by SecureWatch. It contains forensic data about the unauthorized login attempt. 
+      You can use this to file a complaint at <strong>cybercrime.gov.in</strong> (India) or your local cybercrime authority. 
+      Law enforcement can use the IP address + timestamp to legally compel the ISP to reveal the attacker's identity.
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">📋 COMPLAINT REFERENCE</div>
+      <div class="report-row"><span class="report-key">Report ID</span><span class="report-val">SW-${Date.now().toString(36).toUpperCase()}</span></div>
+      <div class="report-row"><span class="report-key">Generated At</span><span class="report-val">${new Date().toLocaleString('en-IN')}</span></div>
+      <div class="report-row"><span class="report-key">Protected Account</span><span class="report-val">${document.getElementById('protectedEmail').textContent}</span></div>
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">🔴 ATTACK DETAILS — ATTEMPT #${attempt.num}</div>
+      <div class="report-row"><span class="report-key">Attempt Number</span><span class="report-val warn">#${attempt.num}</span></div>
+      <div class="report-row"><span class="report-key">Date & Time</span><span class="report-val warn">${attempt.timeStr}</span></div>
+      <div class="report-row"><span class="report-key">Status</span><span class="report-val warn">${attempt.status} (Unauthorized)</span></div>
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">🌐 ATTACKER NETWORK INFORMATION</div>
+      <div class="report-row"><span class="report-key">IP Address</span><span class="report-val warn">${attempt.ip}</span></div>
+      <div class="report-row"><span class="report-key">Location (City)</span><span class="report-val">${attempt.city}</span></div>
+      <div class="report-row"><span class="report-key">Country</span><span class="report-val">${attempt.country}</span></div>
+      <div class="report-row"><span class="report-key">ISP / Network</span><span class="report-val warn">${attempt.isp}</span></div>
+      <div class="report-row"><span class="report-key">IP Type</span><span class="report-val">Residential / Assigned</span></div>
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">💻 ATTACKER DEVICE FINGERPRINT</div>
+      <div class="report-row"><span class="report-key">Device Type</span><span class="report-val">${attempt.device}</span></div>
+      <div class="report-row"><span class="report-key">Operating System</span><span class="report-val">${attempt.os}</span></div>
+      <div class="report-row"><span class="report-key">Browser / Client</span><span class="report-val">${attempt.browser}</span></div>
+      <div class="report-row"><span class="report-key">Device Trust</span><span class="report-val warn">UNKNOWN — Not a trusted device</span></div>
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">⚖️ HOW TO FILE A COMPLAINT</div>
+      <div class="report-row"><span class="report-key">India</span><span class="report-val">cybercrime.gov.in → File Complaint</span></div>
+      <div class="report-row"><span class="report-key">What to submit</span><span class="report-val">This report + your account provider's records</span></div>
+      <div class="report-row"><span class="report-key">Key evidence</span><span class="report-val">IP: ${attempt.ip} | ISP: ${attempt.isp} | Time: ${attempt.timeStr}</span></div>
+      <div class="report-row"><span class="report-key">Legal basis</span><span class="report-val">IT Act 2000 §66 — Computer Crime / Unauthorized Access</span></div>
+    </div>
+
+    <div class="report-section">
+      <div class="report-section-title">📊 ALL ATTEMPTS FROM THIS IP</div>
+      ${attempts.filter(a=>a.ip===attempt.ip).map(a=>`
+        <div class="report-row">
+          <span class="report-key">Attempt #${a.num}</span>
+          <span class="report-val">${a.timeStr} — ${a.status}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  document.getElementById('reportModal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('reportModal').classList.remove('open');
+}
+
+function printReport() {
+  window.print();
+}
+
+function copyReport() {
+  if (!activeReportAttempt) return;
+  const a = activeReportAttempt;
+  const text = `
+====== SECUREWATCH — UNAUTHORIZED LOGIN EVIDENCE REPORT ======
+Report Date : ${new Date().toLocaleString('en-IN')}
+Protected   : ${document.getElementById('protectedEmail').textContent}
+
+ATTEMPT #${a.num}
+Date & Time : ${a.timeStr}
+Status      : ${a.status} (Unauthorized)
+
+ATTACKER NETWORK INFO:
+IP Address  : ${a.ip}
+Location    : ${a.city}, ${a.country}
+ISP/Network : ${a.isp}
+
+DEVICE FINGERPRINT:
+Device Type : ${a.device}
+OS          : ${a.os}
+Browser     : ${a.browser}
+
+LEGAL REFERENCE:
+India Cybercrime Portal: cybercrime.gov.in
+IT Act 2000 §66 — Unauthorized Computer Access
+
+Total attempts from this IP: ${attempts.filter(x=>x.ip===a.ip).length}
+=============================================================
+  `.trim();
+
+  navigator.clipboard.writeText(text).then(() => {
+    showToast('📋 Report copied to clipboard! Paste it in your complaint.', 'success');
+  }).catch(() => {
+    showToast('⚠ Could not copy — please use Print/Save PDF instead', 'info');
+  });
+}
+
+function exportAllReports() {
+  if (attempts.length === 0) {
+    showToast('⚠ No attempts to export yet', 'info');
+    return;
+  }
+  showToast(`📥 Exporting ${attempts.length} attempt records...`, 'success');
+  setTimeout(() => {
+    openReportModal(attempts[0]);
+    showToast('✅ Full evidence report ready — use Print to save as PDF', 'success');
+  }, 800);
+}
+
+// ─────────────────────────────────────────────
+//  MISC
+// ─────────────────────────────────────────────
+
+function clearLog() {
+  if (!confirm('Clear all attempt logs? This cannot be undone.')) return;
+  attempts = [];
+  attemptCounter = 0;
+  currentAlertData = null;
+  placedDots.clear();
+  document.getElementById('worldMap').querySelectorAll('.map-dot').forEach(d=>d.remove());
+  document.getElementById('alertEmpty').style.display = 'block';
+  document.getElementById('liveAlert').style.display = 'none';
+  document.getElementById('alertBadge').style.display = 'none';
+  updateTable();
+  updateStats();
+  updateOriginList();
+  showToast('🗑 Log cleared', 'info');
+}
+
+function changeEmail() {
+  const email = prompt('Enter the email address to protect:', document.getElementById('protectedEmail').textContent);
+  if (email && email.includes('@')) {
+    document.getElementById('protectedEmail').textContent = email;
+    showToast('✅ Protected email updated to: ' + email, 'success');
+  }
+}
+
+function showToast(msg, type = 'info') {
+  const container = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = msg;
+  container.prepend(toast);
+  setTimeout(() => {
+    toast.style.transition = 'opacity 0.4s';
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 400);
+  }, 4000);
+}
+
+// Close modal on overlay click
+document.getElementById('reportModal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+// ─────────────────────────────────────────────
+//  DEEP SYSTEM SCAN
+// ─────────────────────────────────────────────
+async function runDeepScan() {
+  const target = document.getElementById('scanEmail').value.trim();
+  if (!target) {
+    showToast('⚠ Please enter a valid Email ID or IP Address to scan', 'warn');
+    return;
+  }
+  
+  const consoleBox = document.getElementById('scanConsole');
+  consoleBox.style.display = 'flex';
+  consoleBox.innerHTML = ''; 
+
+  const appendLine = (text, delay) => new Promise(r => setTimeout(() => {
+    const div = document.createElement('div');
+    div.innerHTML = text;
+    consoleBox.appendChild(div);
+    consoleBox.scrollTop = consoleBox.scrollHeight;
+    r();
+  }, delay));
+
+  const isIP = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(target);
+  const targetType = isIP ? 'IP ADDRESS' : 'EMAIL ID';
+
+  await appendLine(`> INITIATING DEEP SCAN FOR ${targetType} [<span style="color:#fff">${target}</span>]...`, 0);
+
+  if (isIP) {
+    await appendLine(`> Fetching geographical and ASN data for IP...`, 400);
+    await appendLine(`<span style="color:var(--dim)">> ISP: Target Network Solutions Ltd.</span>`, 500);
+    await appendLine(`<span style="color:var(--dim)">> Route: Node 14 -> Proxy Relay -> Target</span>`, 400);
+  } else {
+    await appendLine(`> Querying Dark Web databases for email leak history...`, 400);
+    await appendLine(`<span style="color:var(--dim)">> Found 2 potential credential dumps from 2023.</span>`, 500);
+  }
+
+  await appendLine(`> EXTRACTING TRAFFIC HISTORY & DOMAIN LOGS...`, 800);
+  
+  const vulnerableDomains = [
+    'http://unsecure-portal.local.net',
+    'http://legacy-admin.login.internal',
+    'http://sql-vulnerable-site.test',
+    'http://pwned-forum-db.net',
+    'http://open-dir.storage-bucket.com',
+    'http://malicious-phishing-trap.ru'
+  ];
+  
+  const visitedDomains = [];
+  const numVisited = Math.floor(Math.random() * 3) + 1; // 1 to 3 domains
+  for (let i = 0; i < numVisited; i++) {
+    const domain = vulnerableDomains[Math.floor(Math.random() * vulnerableDomains.length)];
+    if (!visitedDomains.includes(domain)) visitedDomains.push(domain);
+  }
+
+  await appendLine(`> Scanning for interactions with known vulnerable domains...`, 600);
+  
+  for (const domain of visitedDomains) {
+    await appendLine(`<span style="color:var(--warn)">[!] MATCH FOUND: Target connected to [${domain}]</span>`, 500);
+  }
+  
+  const isSuspicious = Math.random() > 0.3; // 70% chance of threat detection
+  
+  await appendLine(`> Analyzing behavioral risk patterns...`, 1000);
+  
+  if (isSuspicious) {
+    await appendLine(`<span style="color:var(--danger)">[CRITICAL] HIGH RISK ALERTS GENERATED!</span>`, 600);
+    await appendLine(`<span style="color:var(--danger)">> History indicates exposure to cross-site scripting (XSS) payloads.</span>`, 400);
+    await appendLine(`<span style="color:var(--danger)">> Target has interacted with blacklisted phishing infrastructure.</span>`, 400);
+    await appendLine(`<span style="color:var(--danger)">> RECOMMENDATION: Immediate network blacklisting and credential rotation.</span>`, 500);
+    showToast('Critical tracking history detected!', 'danger');
+  } else {
+    await appendLine(`<span style="color:var(--warn)">[!] MINOR ALERTS: Connection to unencrypted HTTP nodes detected.</span>`, 600);
+    await appendLine(`<span style="color:var(--accent2)">[✓] SCAN COMPLETE: No severe malicious payloads found in history.</span>`, 800);
+    showToast('Scan completed. Minor warnings found.', 'warn');
+  }
+}
+
+// Auto-run one attack after 2 seconds to show the system working
+setTimeout(() => {
+  showToast('🛡 SecureWatch is active. Click "Simulate Attack" to test.', 'info');
+}, 800);
+</script>
+</body>
+</html>
