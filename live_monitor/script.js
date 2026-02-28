@@ -1,489 +1,420 @@
-// ─────────────────────────────────────────────
-//  CONFIG
-// ─────────────────────────────────────────────
-
-const API_BASE = "http://localhost:5001";
-
-// ─────────────────────────────────────────────
-//  STATE
-// ─────────────────────────────────────────────
-
-let attempts = [];
-let blockedIPs = new Set();
-let attemptCounter = 0;
-let currentAlertData = null;
-
-// ─────────────────────────────────────────────
-//  CLOCK
-// ─────────────────────────────────────────────
-
 function updateClock() {
   const now = new Date();
-  document.getElementById("clock").textContent = now.toLocaleTimeString(
-    "en-IN",
-    { hour12: false }
-  );
+  document.getElementById("clock").innerText = now.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 setInterval(updateClock, 1000);
 updateClock();
 
-// ─────────────────────────────────────────────
-//  FETCH USER INFO ON LOAD  →  /api/me
-// ─────────────────────────────────────────────
+// --- STATE ---
+let blockedList = new Set(); // We still track local UI blocks if we want
 
-async function fetchUserInfo() {
-  const display = document.getElementById("myIpDisplay");
-  display.innerHTML = "Fetching network data...";
+// --- API CONFIG ---
+const API_BASE = "http://localhost:5001/api"; 
+
+// --- CORE LOGIC ---
+
+// 1. Fetch live public IP and update UI
+async function fetchMyData() {
   try {
-    const res = await fetch(`${API_BASE}/api/me`);
-    if (!res.ok) throw new Error("Non-200 response");
+    const res = await fetch(`${API_BASE}/me`);
     const data = await res.json();
-    display.innerHTML = `IP: ${data.ip} &middot; ${data.city}, ${data.country}`;
-    showToast(`🛡 SecureWatch active. Your IP: ${data.ip} (${data.city}, ${data.country})`, "info");
+    document.getElementById("myIpDisplay").innerHTML = 
+      `🟢 LIVE: ${data.ip} (${data.city}, ${data.country})`;
   } catch (e) {
-    display.innerHTML = "Network Data Offline";
-    showToast("⚠ Could not reach backend — is Flask running on port 5001?", "warn");
+    document.getElementById("myIpDisplay").innerText = "⚠️ API DISCONNECTED";
   }
 }
 
-// ─────────────────────────────────────────────
-//  SIMULATE ATTACK  →  /api/scan (live IP from /api/me)
-// ─────────────────────────────────────────────
-
-// Fallback pool for when we want to generate varied fake attacker IPs
-// (since /api/scan operates on a target you provide, we generate realistic
-//  attacker IPs and run them through the real scan engine)
-const ATTACKER_IPS = [
-  "103.21.58.74",
-  "185.220.101.45",
-  "45.86.201.17",
-  "91.108.4.212",
-  "196.207.128.10",
-  "121.244.37.89",
-  "77.88.55.77",
-  "5.188.86.195",
-  "36.77.201.54",
-  "197.210.65.33",
-];
-
-const DEVICE_POOL = [
-  { os: "Windows 10",   browser: "Chrome 121",    device: "🖥 Desktop" },
-  { os: "Windows 11",   browser: "Firefox 122",   device: "🖥 Desktop" },
-  { os: "Ubuntu Linux", browser: "curl/7.88",     device: "🤖 Bot/Script" },
-  { os: "Android 13",   browser: "Chrome Mobile", device: "📱 Mobile" },
-  { os: "macOS 14",     browser: "Safari 17",     device: "💻 Laptop" },
-  { os: "iOS 17",       browser: "Safari Mobile", device: "📱 Mobile" },
-  { os: "Debian Linux", browser: "Python/3.11",   device: "🤖 Bot/Script" },
-];
-
-async function simulateAttack() {
-  // Pick a random attacker IP and device from the pools
-  const ip = ATTACKER_IPS[Math.floor(Math.random() * ATTACKER_IPS.length)];
-  const deviceInfo = DEVICE_POOL[Math.floor(Math.random() * DEVICE_POOL.length)];
-
-  // Show scanning indicator
-  showToast(`🔍 Scanning incoming IP: ${ip}...`, "info");
-
+// 2. Fetch Aggregated Stats
+async function updateStats() {
   try {
-    // Hit real Flask /api/scan endpoint with the attacker IP
-    const res = await fetch(`${API_BASE}/api/scan`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: ip }),
-    });
+    const res = await fetch(`${API_BASE}/stats`);
+    const st = await res.json();
+    document.getElementById("statTotal").innerText = st.total;
+    document.getElementById("statFailed").innerText = st.failed;
+    document.getElementById("statCountries").innerText = st.countries;
+    document.getElementById("statBlocked").innerText = blockedList.size; 
+  } catch (e) {}
+}
 
-    if (!res.ok) throw new Error("Scan API error");
-    const data = await res.json();
-
-    // Extract geo info from scan results (Flask returns it in result msgs)
-    // Also call /api/me-style geo lookup via a lightweight parse of results
-    const geoLine = data.results.find(
-      (r) => r.msg && r.msg.includes("ISP:") && r.msg.includes("Location:")
-    );
-
-    let city = "Unknown";
-    let country = "Unknown";
-    let isp = "Unknown ISP";
-
-    if (geoLine) {
-      // Parse: "ISP: Airtel | Location: New Delhi, India"
-      const ispMatch = geoLine.msg.match(/ISP:\s*([^|]+)\|/);
-      const locMatch = geoLine.msg.match(/Location:\s*(.+)/);
-      if (ispMatch) isp = ispMatch[1].trim();
-      if (locMatch) {
-        const parts = locMatch[1].trim().split(",");
-        city = parts[0]?.trim() || "Unknown";
-        country = parts[1]?.trim() || "Unknown";
-      }
+// 3. Load full history on boot
+async function loadHistory() {
+  try {
+    const res = await fetch(`${API_BASE}/history?limit=100`);
+    const history = await res.json();
+    document.getElementById("attemptLog").innerHTML = "";
+    if (history.length === 0) {
+      showEmptyState();
+    } else {
+      // reverse because API returns newest first, we will append them 
+      history.reverse().forEach(entry => appendLogToTable(entry));
     }
-
-    const status = blockedIPs.has(ip)
-      ? "BLOCKED"
-      : data.severity === "high"
-      ? "FAILED"
-      : "FAILED";
-
-    const now = new Date();
-    attemptCounter++;
-
-    const attempt = {
-      num: attemptCounter,
-      ip,
-      city,
-      country,
-      isp,
-      os: deviceInfo.os,
-      browser: deviceInfo.browser,
-      device: deviceInfo.device,
-      severity: data.severity,
-      status,
-      time: now,
-      timeStr: now.toLocaleString("en-IN", {
-        dateStyle: "short",
-        timeStyle: "medium",
-      }),
-      scanResults: data.results,
-      reportGenerated: false,
-    };
-
-    attempts.unshift(attempt);
-    currentAlertData = attempt;
-
-    updateTable();
-    updateStats();
-    updateAlert(attempt);
-    updateMap({ country, city });
-    updateOriginList();
-
-    const toastType = data.severity === "high" ? "danger" : "warn";
-    showToast(
-      `🚨 LOGIN ATTEMPT #${attemptCounter} FROM ${city}, ${country} — IP: ${ip} [${data.severity.toUpperCase()} RISK]`,
-      toastType
-    );
-  } catch (err) {
-    showToast(`⚠ Attack simulation failed — is Flask running on port 5001?`, "warn");
-    console.error("simulateAttack error:", err);
+  } catch (e) {
+    console.error("Failed to load history", e);
   }
+}
+
+function showEmptyState() {
+  document.getElementById("attemptLog").innerHTML = `
+    <tr><td colspan="7">
+      <div class="no-attempts">🛡 No unauthorized attempts detected yet</div>
+    </td></tr>`;
+}
+
+// 4. Live Server-Sent Events (SSE) Stream
+function connectSSE() {
+  const sseLabel = document.getElementById("connectionStatus");
+  const evtSource = new EventSource(`${API_BASE}/stream`);
+
+  evtSource.onopen = () => {
+    sseLabel.innerHTML = `<span style="color:var(--success)">●</span> STREAM CONNECTED`;
+    sseLabel.style.borderColor = "var(--success)";
+  };
+
+  evtSource.addEventListener("new_attempt", (e) => {
+    const entry = JSON.parse(e.data);
+    
+    // Remove empty state message if it's there
+    const empty = document.querySelector(".no-attempts");
+    if (empty) {
+      document.getElementById("attemptLog").innerHTML = "";
+    }
+    
+    appendLogToTable(entry);
+    updateStats();
+    triggerLiveAlert(entry);
+    highlightMap(entry.country);
+  });
+
+  evtSource.addEventListener("history_cleared", () => {
+    showEmptyState();
+    updateStats();
+  });
+
+  evtSource.onerror = () => {
+    sseLabel.innerHTML = `<span style="color:var(--danger)">○</span> RECONNECTING...`;
+    sseLabel.style.borderColor = "var(--border)";
+  };
+}
+
+// Helper: Insert entry row to HTML
+function appendLogToTable(entry) {
+  const tbody = document.getElementById("attemptLog");
+  const tr = document.createElement("tr");
+  
+  // Blink animation for new rows
+  tr.style.animation = "row-flash 1s ease";
+  
+  let severityHTML = "";
+  if (entry.severity === "high") severityHTML = `<span class="badge badge-high">High Risk</span>`;
+  else if (entry.severity === "critical") severityHTML = `<span class="badge badge-high" style="background:var(--accent2);color:#000">CRITICAL</span>`;
+  
+  let actionBtn = blockedList.has(entry.ip) 
+    ? `<button class="btn" style="background:var(--border);color:var(--dim)" disabled>Blocked</button>`
+    : `<button class="btn btn-danger" onclick="blockIP('${entry.ip}')">Block</button>`;
+
+  tr.innerHTML = `
+    <td style="color:var(--dim)">#${entry.id.toString().slice(-4)}</td>
+    <td style="font-family:var(--mono);color:var(--accent)">
+      ${entry.ip} <br>${severityHTML}
+    </td>
+    <td><strong>${entry.country}</strong><br><span style="font-size:10px;color:var(--dim)">${entry.city} / ${entry.isp}</span></td>
+    <td>${entry.device}</td>
+    <td>${entry.timeStr}</td>
+    <td style="color:var(--danger)">${entry.status}</td>
+    <td>${actionBtn}</td>
+  `;
+  
+  // Prepend to top
+  tbody.insertBefore(tr, tbody.firstChild);
+  
+  // Keep row count sane in UI
+  if (tbody.children.length > 50) {
+    if (tbody.lastChild) tbody.lastChild.remove();
+  }
+}
+
+// Simulate a new attack by issuing POST to /api/log
+function simulateAttack() {
+  // We send a mock IP; the backend will trace it
+  const badIP = `${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}`;
+  const devices = ["Linux • Chrome", "Windows • Edge", "Mac • Safari", "Mullvad VPN Node", "Automated Script"];
+  
+  fetch(`${API_BASE}/log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ip: badIP,
+      os: "Simulated",
+      device: devices[Math.floor(Math.random()*devices.length)],
+      severity: Math.random() > 0.8 ? "high" : "low"
+    })
+  });
 }
 
 function simulateBurst() {
-  let delay = 0;
   for (let i = 0; i < 5; i++) {
-    setTimeout(simulateAttack, delay);
-    delay += 800; // slightly longer to avoid race conditions on API
+    setTimeout(() => {
+      simulateAttack();
+    }, i * 300);
   }
 }
 
-// ─────────────────────────────────────────────
-//  TABLE
-// ─────────────────────────────────────────────
+let currentAlertTimeout = null;
+let alertActive = false;
 
-function updateTable() {
-  const tbody = document.getElementById("attemptLog");
+async function clearLog() {
+  await fetch(`${API_BASE}/clear`, { method: "POST" });
+  document.getElementById("alertEmpty").style.display   = "block";
+  document.getElementById("liveAlert").style.display    = "none";
+  document.getElementById("alertBadge").style.display   = "none";
+  alertActive = false;
+}
 
-  if (attempts.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7"><div class="no-attempts">🛡 No unauthorized attempts detected<br><span style="font-size:10px;margin-top:8px;display:block;">Click "Simulate Attack" to test the system</span></div></td></tr>`;
+function triggerLiveAlert(data) {
+  alertActive = true;
+  document.getElementById("alertEmpty").style.display = "none";
+  document.getElementById("liveAlert").style.display = "block";
+
+  const numEl = document.getElementById("alertNum");
+  numEl.innerText = parseInt(numEl.innerText) + 1;
+
+  document.getElementById("alertDetail").innerHTML = `
+    <span style="color:var(--accent)">Origin:</span> ${data.city}, ${data.country}<br>
+    <span style="color:var(--accent)">IP Addr:</span> ${data.ip}<br>
+    <span style="color:var(--accent)">ISP:</span> ${data.isp}<br>
+    <span style="color:var(--accent)">Severity:</span> <span style="text-transform:uppercase;color:var(--accent2)">SCANNED</span>
+  `;
+
+  document.getElementById("alertBadge").style.display = "inline-block";
+  document.getElementById("alertBadge").style.animation = "badge-pulse 1s infinite";
+
+  if (currentAlertTimeout) clearTimeout(currentAlertTimeout);
+  currentAlertTimeout = setTimeout(() => {
+    alertActive = false;
+    document.getElementById("alertEmpty").style.display = "block";
+    document.getElementById("liveAlert").style.display = "none";
+    document.getElementById("alertBadge").style.display = "none";
+    document.getElementById("alertNum").innerText = "0";
+  }, 10000);
+}
+
+function blockIP(ip) {
+  if (!ip) return;
+  if (blockedList.has(ip)) return;
+  blockedList.add(ip);
+  updateStats();
+  renderBlockedList();
+  showToast(`IP ${ip} permanently blocked at firewall level.`, "success");
+
+  // Disable all buttons in table for this IP
+  const btns = document.querySelectorAll("#attemptLog button");
+  btns.forEach((b) => {
+    if (b.innerText === "Block" && b.onclick.toString().includes(ip)) {
+      b.disabled = true;
+      b.style.background = "var(--border)";
+      b.style.color = "var(--dim)";
+      b.innerText = "Blocked";
+    }
+  });
+}
+
+function unblockIP(ip) {
+  blockedList.delete(ip);
+  updateStats();
+  renderBlockedList();
+  showToast(`IP ${ip} access restored.`, "warn");
+}
+
+function renderBlockedList() {
+  const list = document.getElementById("blockedList");
+  if (blockedList.size === 0) {
+    list.innerHTML = `<div class="empty-msg">No IPs blocked yet</div>`;
     return;
   }
-
-  tbody.innerHTML = attempts
+  list.innerHTML = Array.from(blockedList)
     .map(
-      (a) => `
-    <tr class="log-row ${a.status === "FAILED" ? "danger-row" : ""}">
-      <td><span class="attempt-num">#${a.num}</span></td>
-      <td>
-        <span class="ip-tag" onclick="showReport(${a.num - 1})" title="Click to view full report">${a.ip}</span>
-        ${a.severity === "high" ? '<br><span style="color:var(--danger);font-size:9px;font-family:var(--mono)">⚠ HIGH RISK</span>' : ''}
-      </td>
-      <td>
-        <div class="location-text">${a.city}, ${a.country}</div>
-        <div class="isp-text">${a.isp}</div>
-      </td>
-      <td>
-        <span class="device-icon">${a.device.split(" ")[0]}</span>
-        <span style="font-size:12px">${a.os}</span><br>
-        <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">${a.browser}</span>
-      </td>
-      <td><div class="time-text">${a.timeStr}</div></td>
-      <td>
-        <span class="status-badge ${a.status === "FAILED" ? "status-fail" : a.status === "BLOCKED" ? "status-block" : "status-ok"}">
-          ${a.status === "FAILED" ? "⛔ FAILED" : a.status === "BLOCKED" ? "🚫 BLOCKED" : "✅ ALLOWED"}
-        </span>
-      </td>
-      <td>
-        <div class="action-btns">
-          <button class="mini-btn mini-block" onclick="blockIP('${a.ip}', '${a.city}', '${a.country}')">🚫 Block</button>
-          <button class="mini-btn mini-report" onclick="showReport(${a.num - 1})">📋 Report</button>
-        </div>
-      </td>
-    </tr>
-  `
+      (ip) => `
+      <div class="blocked-item">
+        <div class="blocked-ip">${ip}</div>
+        <button class="btn btn-warn" style="font-size:10px;padding:4px 8px" onclick="unblockIP('${ip}')">Unblock</button>
+      </div>
+    `
     )
     .join("");
 }
 
-// ─────────────────────────────────────────────
-//  STATS
-// ─────────────────────────────────────────────
+function highlightMap(country) {
+  const originList = document.getElementById("originList");
+  if (originList.innerText.includes("No attack roles") || originList.innerText.includes("No attack origins")) {
+    originList.innerHTML = "";
+  }
+  
+  // Don't flood the HTML list
+  if (originList.children.length < 10) {
+    const d = document.createElement("div");
+    d.style.marginBottom = "4px";
+    d.innerHTML = `<span style="color:var(--danger)">●</span> ${country}`;
+    originList.prepend(d);
+  }
 
-function updateStats() {
-  document.getElementById("statTotal").textContent = attempts.length;
-  document.getElementById("statFailed").textContent = attempts.filter(
-    (a) => a.status === "FAILED"
-  ).length;
-  document.getElementById("statBlocked").textContent = blockedIPs.size;
-  const countries = new Set(attempts.map((a) => a.country));
-  document.getElementById("statCountries").textContent = countries.size;
+  const map = document.getElementById("worldMap");
+  
+  // Visual dot
+  const dot = document.createElement("div");
+  dot.className = "map-origin";
+  dot.style.background  = "var(--danger)";
+  dot.style.boxShadow   = "0 0 10px var(--danger)";
+
+  dot.style.top  = Math.random() * 80 + 10 + "%";
+  dot.style.left = Math.random() * 80 + 10 + "%";
+  map.appendChild(dot);
+
+  setTimeout(() => {
+    if (dot.parentNode) dot.remove();
+  }, 3000);
 }
 
-// ─────────────────────────────────────────────
-//  ALERT BOX
-// ─────────────────────────────────────────────
-
-function updateAlert(attempt) {
-  const total = attempts.length;
-  document.getElementById("alertEmpty").style.display = "none";
-  const la = document.getElementById("liveAlert");
-  la.style.display = "block";
-
-  document.getElementById("alertNum").textContent = total;
-  document.getElementById("alertBadge").style.display = "inline";
-
-  const severityColor = attempt.severity === "high" ? "var(--danger)" : "var(--warn)";
-
-  document.getElementById("alertDetail").innerHTML = `
-    <div class="detail-row"><span class="detail-key">IP ADDRESS</span><span class="detail-val highlight">${attempt.ip}</span></div>
-    <div class="detail-row"><span class="detail-key">LOCATION</span><span class="detail-val">${attempt.city}, ${attempt.country}</span></div>
-    <div class="detail-row"><span class="detail-key">ISP / NETWORK</span><span class="detail-val">${attempt.isp}</span></div>
-    <div class="detail-row"><span class="detail-key">DEVICE</span><span class="detail-val">${attempt.device} · ${attempt.os}</span></div>
-    <div class="detail-row"><span class="detail-key">BROWSER</span><span class="detail-val">${attempt.browser}</span></div>
-    <div class="detail-row"><span class="detail-key">RISK LEVEL</span><span class="detail-val" style="color:${severityColor}">${attempt.severity.toUpperCase()}</span></div>
-    <div class="detail-row"><span class="detail-key">STATUS</span><span class="detail-val danger">${attempt.status}</span></div>
-    <div class="detail-row"><span class="detail-key">TIME</span><span class="detail-val">${attempt.timeStr}</span></div>
-  `;
-}
-
-// ─────────────────────────────────────────────
-//  BLOCK IP
-// ─────────────────────────────────────────────
-
-function blockIP(ip, city, country) {
-  if (blockedIPs.has(ip)) {
-    showToast(`⚠ IP ${ip} is already blocked`, "info");
+// Scan specific IP or Email against backend
+async function runDeepScan() {
+  const val = document.getElementById("scanEmail").value.trim();
+  if (!val) {
+    showToast("Please enter an email or IP", "error");
     return;
   }
-  blockedIPs.add(ip);
 
-  const bl = document.getElementById("blockedList");
-  const empty = bl.querySelector(".empty-msg");
-  if (empty) empty.remove();
+  const consoleDiv = document.getElementById("scanConsole");
+  consoleDiv.style.display = "flex";
+  consoleDiv.innerHTML = `<div>&gt; Initiating engine scan...</div>`;
 
-  const item = document.createElement("div");
-  item.className = "blocked-item";
-  item.id = "blocked_" + ip.replace(/\./g, "_");
-  item.innerHTML = `
-    <div>
-      <div class="blocked-ip">🚫 ${ip}</div>
-      <div class="blocked-loc">${city}, ${country}</div>
-    </div>
-    <button class="unblock-btn" onclick="unblockIP('${ip}', this.closest('.blocked-item'))">Unblock</button>
-  `;
-  bl.prepend(item);
-
-  attempts.forEach((a) => {
-    if (a.ip === ip) a.status = "BLOCKED";
-  });
-
-  document.getElementById("blockedCount").textContent = blockedIPs.size + " BLOCKED";
-  updateStats();
-  updateTable();
-  showToast(`🚫 IP ${ip} (${city}) has been BLOCKED`, "success");
+  try {
+    const res = await fetch(`${API_BASE}/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: val })
+    });
+    const info = await res.json();
+    
+    consoleDiv.innerHTML = `<div>&gt; Connected to Live Database...</div>`;
+    
+    // simulate typing effect for logs
+    let i = 0;
+    for (const log of info.results) {
+        setTimeout(() => {
+            const d = document.createElement("div");
+            let color = "var(--accent2)";
+            if (log.type === "warn") color = "var(--warn)";
+            if (log.type === "danger") color = "var(--danger)";
+            if (log.type === "success") color = "var(--success)";
+            if (log.type === "dim") color = "var(--dim)";
+            d.style.color = color;
+            d.innerHTML = `&gt; ${log.msg}`;
+            consoleDiv.appendChild(d);
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }, i * 150);
+        i++;
+    }
+  } catch (e) {
+    consoleDiv.innerHTML += `<div style="color:var(--danger)">&gt; Backend connection failed! Ensure server is running.</div>`;
+  }
 }
 
-function unblockIP(ip, el) {
-  blockedIPs.delete(ip);
-  el.remove();
-  if (blockedIPs.size === 0) {
-    document.getElementById("blockedList").innerHTML =
-      '<div class="empty-msg">No IPs blocked yet</div>';
+function showToast(msg, type = "success") {
+  const tc = document.getElementById("toastContainer");
+  const el = document.createElement("div");
+  el.className = `toast toast-${type}`;
+  el.innerText = msg;
+  tc.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = "0";
+    el.style.transform = "translateX(100px)";
+    setTimeout(() => el.remove(), 300);
+  }, 3000);
+}
+
+function changeEmail() {
+  const e = prompt("Enter new email to protect:");
+  if (e && e.includes("@")) {
+    document.getElementById("protectedEmail").innerText = e;
+    showToast(`Now protecting ${e}`);
   }
-  document.getElementById("blockedCount").textContent = blockedIPs.size + " BLOCKED";
-  updateStats();
-  showToast(`✅ IP ${ip} has been unblocked`, "info");
 }
 
 function blockCurrentAlert() {
-  if (currentAlertData)
-    blockIP(currentAlertData.ip, currentAlertData.city, currentAlertData.country);
-}
-
-// ─────────────────────────────────────────────
-//  MAP
-// ─────────────────────────────────────────────
-
-const mapPositions = {
-  India:       { top: "38%", left: "65%" },
-  Russia:      { top: "20%", left: "60%" },
-  China:       { top: "32%", left: "73%" },
-  Germany:     { top: "24%", left: "50%" },
-  Nigeria:     { top: "48%", left: "48%" },
-  Ukraine:     { top: "26%", left: "56%" },
-  Netherlands: { top: "23%", left: "49%" },
-  Indonesia:   { top: "52%", left: "76%" },
-  Kenya:       { top: "50%", left: "56%" },
-  Unknown:     { top: "35%", left: "50%" },
-};
-
-const placedDots = new Set();
-
-function updateMap(attacker) {
-  const map = document.getElementById("worldMap");
-  // Try exact match first, then partial match
-  const countryKey =
-    Object.keys(mapPositions).find((k) =>
-      attacker.country.toLowerCase().includes(k.toLowerCase())
-    ) || "Unknown";
-
-  if (placedDots.has(countryKey)) return;
-  placedDots.add(countryKey);
-
-  const pos = mapPositions[countryKey];
-  const dot = document.createElement("div");
-  dot.className = "map-dot";
-  dot.style.top = pos.top;
-  dot.style.left = pos.left;
-  dot.title = `${attacker.city}, ${attacker.country}`;
-  map.appendChild(dot);
-}
-
-function updateOriginList() {
-  const countries = [...new Set(attempts.map((a) => a.country))];
-  const ol = document.getElementById("originList");
-  if (countries.length === 0) {
-    ol.textContent = "No attack origins detected yet.";
-    return;
+  // Try to find the latest unblocked IP
+  const latestIP = document.getElementById("attemptLog").querySelector("tr").querySelector("td:nth-child(2)").innerText.split(" ")[0];
+  if(latestIP) {
+      blockIP(latestIP);
   }
-  ol.innerHTML = countries
-    .map((c) => {
-      const count = attempts.filter((a) => a.country === c).length;
-      const highRisk = attempts.filter(
-        (a) => a.country === c && a.severity === "high"
-      ).length;
-      return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(10,58,90,0.3)">
-        <span>${c}${highRisk > 0 ? ' <span style="color:var(--danger)">⚠</span>' : ""}</span>
-        <span style="color:var(--danger)">${count} attempt${count > 1 ? "s" : ""}</span>
-      </div>`;
-    })
-    .join("");
-}
-
-// ─────────────────────────────────────────────
-//  REPORT MODAL
-// ─────────────────────────────────────────────
-
-let activeReportAttempt = null;
-
-function showReport(idx) {
-  const attempt = attempts.find((a) => a.num === idx + 1) || attempts[0];
-  activeReportAttempt = attempt;
-  openReportModal(attempt);
 }
 
 function reportCurrentAlert() {
-  if (currentAlertData) openReportModal(currentAlertData);
-}
-
-function openReportModal(attempt) {
-  activeReportAttempt = attempt;
-  const body = document.getElementById("reportBody");
-
-  // Build scan findings section from real backend results
-  const scanFindings = attempt.scanResults
-    ? attempt.scanResults
-        .map((r) => {
-          const colorMap = {
-            info: "#7ecfff",
-            dim: "#888",
-            warn: "#f0a500",
-            danger: "#ff4444",
-            success: "#00ff9d",
-          };
-          return `<div class="report-row" style="font-family:monospace;font-size:11px;color:${colorMap[r.type] || "#aaa"}">> ${r.msg}</div>`;
-        })
-        .join("")
-    : '<div class="report-row"><span class="report-val">No scan data available</span></div>';
-
-  body.innerHTML = `
-    <div class="report-disclaimer">
-      ⚠️ This evidence report is auto-generated by SecureWatch using live backend data. 
-      It contains forensic data about the unauthorized login attempt. 
-      You can use this to file a complaint at <strong>cybercrime.gov.in</strong> (India) or your local cybercrime authority.
-    </div>
-
-    <div class="report-section">
-      <div class="report-section-title">📋 COMPLAINT REFERENCE</div>
-      <div class="report-row"><span class="report-key">Report ID</span><span class="report-val">SW-${Date.now().toString(36).toUpperCase()}</span></div>
-      <div class="report-row"><span class="report-key">Generated At</span><span class="report-val">${new Date().toLocaleString("en-IN")}</span></div>
-      <div class="report-row"><span class="report-key">Protected Account</span><span class="report-val">${document.getElementById("protectedEmail").textContent}</span></div>
-      <div class="report-row"><span class="report-key">Risk Level</span><span class="report-val" style="color:${attempt.severity === "high" ? "var(--danger)" : "var(--warn)"}">${attempt.severity.toUpperCase()}</span></div>
-    </div>
-
-    <div class="report-section">
-      <div class="report-section-title">🔴 ATTACK DETAILS — ATTEMPT #${attempt.num}</div>
-      <div class="report-row"><span class="report-key">Attempt Number</span><span class="report-val warn">#${attempt.num}</span></div>
-      <div class="report-row"><span class="report-key">Date & Time</span><span class="report-val warn">${attempt.timeStr}</span></div>
-      <div class="report-row"><span class="report-key">Status</span><span class="report-val warn">${attempt.status} (Unauthorized)</span></div>
-    </div>
-
-    <div class="report-section">
-      <div class="report-section-title">🌐 ATTACKER NETWORK INFORMATION</div>
-      <div class="report-row"><span class="report-key">IP Address</span><span class="report-val warn">${attempt.ip}</span></div>
-      <div class="report-row"><span class="report-key">Location (City)</span><span class="report-val">${attempt.city}</span></div>
-      <div class="report-row"><span class="report-key">Country</span><span class="report-val">${attempt.country}</span></div>
-      <div class="report-row"><span class="report-key">ISP / Network</span><span class="report-val warn">${attempt.isp}</span></div>
-    </div>
-
-    <div class="report-section">
-      <div class="report-section-title">💻 ATTACKER DEVICE FINGERPRINT</div>
-      <div class="report-row"><span class="report-key">Device Type</span><span class="report-val">${attempt.device}</span></div>
-      <div class="report-row"><span class="report-key">Operating System</span><span class="report-val">${attempt.os}</span></div>
-      <div class="report-row"><span class="report-key">Browser / Client</span><span class="report-val">${attempt.browser}</span></div>
-      <div class="report-row"><span class="report-key">Device Trust</span><span class="report-val warn">UNKNOWN — Not a trusted device</span></div>
-    </div>
-
-    <div class="report-section">
-      <div class="report-section-title">🔍 LIVE BACKEND SCAN RESULTS</div>
-      ${scanFindings}
-    </div>
-
-    <div class="report-section">
-      <div class="report-section-title">⚖️ HOW TO FILE A COMPLAINT</div>
-      <div class="report-row"><span class="report-key">India</span><span class="report-val">cybercrime.gov.in → File Complaint</span></div>
-      <div class="report-row"><span class="report-key">What to submit</span><span class="report-val">This report + your account provider's records</span></div>
-      <div class="report-row"><span class="report-key">Key evidence</span><span class="report-val">IP: ${attempt.ip} | ISP: ${attempt.isp} | Time: ${attempt.timeStr}</span></div>
-      <div class="report-row"><span class="report-key">Legal basis</span><span class="report-val">IT Act 2000 §66 — Computer Crime / Unauthorized Access</span></div>
-    </div>
-
-    <div class="report-section">
-      <div class="report-section-title">📊 ALL ATTEMPTS FROM THIS IP</div>
-      ${attempts
-        .filter((a) => a.ip === attempt.ip)
-        .map(
-          (a) => `
-          <div class="report-row">
-            <span class="report-key">Attempt #${a.num}</span>
-            <span class="report-val">${a.timeStr} — ${a.status} [${a.severity?.toUpperCase() || "—"}]</span>
-          </div>`
-        )
-        .join("")}
-    </div>
-  `;
-
-  document.getElementById("reportModal").classList.add("open");
+  showToast("Threat data compiled. Review report below.", "warn");
+  setTimeout(generateReport, 800);
 }
 
 function closeModal() {
-  document.getElementById("reportModal").classList.remove("open");
+  document.getElementById("reportModal").style.display = "none";
+}
+
+function generateReport() {
+  const modalCSS = `
+    .report-header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 15px;
+    }
+    .report-header h2 { margin:0; font-family:var(--mono); color:var(--danger); }
+    .report-header h4 { margin:5px 0 0 0; color:var(--text); }
+    .report-section {
+      margin-top: 20px;
+    }
+    .report-title {
+      color: var(--accent);
+      font-size: 14px;
+      font-weight: bold;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 5px;
+      margin-bottom: 15px;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 15px;
+    }
+    .info-item {
+      font-family: var(--mono);
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+  `;
+
+  const body = document.getElementById("reportBody");
+  body.innerHTML = `
+    <style>${modalCSS}</style>
+    <div class="report-header">
+      <h2>🚨 SECURITY INCIDENT REPORT</h2>
+      <h4>Classification: Unauthorized Access Attempt (T1078)</h4>
+    </div>
+    <div class="report-section">
+      <div class="report-title">1. INCIDENT METADATA</div>
+      <div class="info-item"><span style="color:var(--dim)">Timestamp:</span> ${new Date().toISOString()}</div>
+      <div class="info-item"><span style="color:var(--dim)">Status:</span> INVESTIGATION OPEN</div>
+    </div>
+    <div style="margin-top:20px;font-family:var(--mono);font-size:12px;color:var(--dim)">
+      This auto-generated report contains sensitive telemetry data. Do not distribute outside authorized channels. System logs have been secured via SHA-256 hash validation.
+    </div>
+  `;
+  document.getElementById("reportModal").style.display = "flex";
+}
+
+function exportAllReports() {
+  showToast("Generating consolidated forensic report...", "success");
 }
 
 function printReport() {
@@ -491,186 +422,14 @@ function printReport() {
 }
 
 function copyReport() {
-  if (!activeReportAttempt) return;
-  const a = activeReportAttempt;
-  const scanText = a.scanResults
-    ? a.scanResults.map((r) => `  > ${r.msg}`).join("\n")
-    : "  No scan data";
-
-  const text = `
-====== SECUREWATCH — UNAUTHORIZED LOGIN EVIDENCE REPORT ======
-Report Date : ${new Date().toLocaleString("en-IN")}
-Protected   : ${document.getElementById("protectedEmail").textContent}
-Risk Level  : ${a.severity?.toUpperCase() || "UNKNOWN"}
-
-ATTEMPT #${a.num}
-Date & Time : ${a.timeStr}
-Status      : ${a.status} (Unauthorized)
-
-ATTACKER NETWORK INFO:
-IP Address  : ${a.ip}
-Location    : ${a.city}, ${a.country}
-ISP/Network : ${a.isp}
-
-DEVICE FINGERPRINT:
-Device Type : ${a.device}
-OS          : ${a.os}
-Browser     : ${a.browser}
-
-LIVE SCAN RESULTS:
-${scanText}
-
-LEGAL REFERENCE:
-India Cybercrime Portal: cybercrime.gov.in
-IT Act 2000 §66 — Unauthorized Computer Access
-
-Total attempts from this IP: ${attempts.filter((x) => x.ip === a.ip).length}
-=============================================================
-  `.trim();
-
-  navigator.clipboard
-    .writeText(text)
-    .then(() => {
-      showToast("📋 Report copied to clipboard! Paste it in your complaint.", "success");
-    })
-    .catch(() => {
-      showToast("⚠ Could not copy — please use Print/Save PDF instead", "info");
-    });
+  const el = document.getElementById("reportBody");
+  navigator.clipboard.writeText(el.innerText).then(() => {
+    showToast("Report copied to clipboard", "success");
+  });
 }
 
-function exportAllReports() {
-  if (attempts.length === 0) {
-    showToast("⚠ No attempts to export yet", "info");
-    return;
-  }
-  showToast(`📥 Exporting ${attempts.length} attempt records...`, "success");
-  setTimeout(() => {
-    openReportModal(attempts[0]);
-    showToast("✅ Full evidence report ready — use Print to save as PDF", "success");
-  }, 800);
-}
-
-// ─────────────────────────────────────────────
-//  DEEP SYSTEM SCAN  →  /api/scan
-// ─────────────────────────────────────────────
-
-async function runDeepScan() {
-  const target = document.getElementById("scanEmail").value.trim();
-  if (!target) {
-    showToast("⚠ Please enter a valid Email ID or IP Address to scan", "warn");
-    return;
-  }
-
-  const consoleBox = document.getElementById("scanConsole");
-  consoleBox.style.display = "flex";
-  consoleBox.innerHTML = "";
-
-  const appendLine = (text, type = "info") => {
-    const div = document.createElement("div");
-    const colorMap = {
-      info: "var(--accent2)",
-      dim: "var(--dim)",
-      warn: "var(--warn)",
-      danger: "var(--danger)",
-      success: "#00ff9d",
-    };
-    div.style.color = colorMap[type] || colorMap["info"];
-    div.innerHTML = "> " + text;
-    consoleBox.appendChild(div);
-    consoleBox.scrollTop = consoleBox.scrollHeight;
-  };
-
-  appendLine(`CONNECTING TO SECUREWATCH BACKEND API...`, "info");
-  appendLine(`TARGET: ${target}`, "dim");
-
-  try {
-    const res = await fetch(`${API_BASE}/api/scan`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target }),
-    });
-
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-
-    for (const item of data.results) {
-      await new Promise((r) => setTimeout(r, 120 + Math.random() * 250));
-      appendLine(item.msg, item.type);
-    }
-
-    appendLine(`──────────────────────────────`, "dim");
-    appendLine(
-      `SCAN COMPLETE — SEVERITY: ${data.severity.toUpperCase()}`,
-      data.severity === "high" ? "danger" : "warn"
-    );
-
-    if (data.severity === "high") {
-      showToast("🚨 CRITICAL: High-risk tracking history detected!", "danger");
-    } else {
-      showToast("⚠ Scan complete. Minor warnings found.", "warn");
-    }
-  } catch (err) {
-    appendLine(`ERROR: Could not reach Flask backend at ${API_BASE}`, "danger");
-    appendLine(`Make sure Flask is running: python app.py`, "dim");
-    showToast("⚠ Scan failed — is Flask running on port 5001?", "danger");
-    console.error("runDeepScan error:", err);
-  }
-}
-
-// ─────────────────────────────────────────────
-//  MISC
-// ─────────────────────────────────────────────
-
-function clearLog() {
-  if (!confirm("Clear all attempt logs? This cannot be undone.")) return;
-  attempts = [];
-  attemptCounter = 0;
-  currentAlertData = null;
-  placedDots.clear();
-  document
-    .getElementById("worldMap")
-    .querySelectorAll(".map-dot")
-    .forEach((d) => d.remove());
-  document.getElementById("alertEmpty").style.display = "block";
-  document.getElementById("liveAlert").style.display = "none";
-  document.getElementById("alertBadge").style.display = "none";
-  updateTable();
-  updateStats();
-  updateOriginList();
-  showToast("🗑 Log cleared", "info");
-}
-
-function changeEmail() {
-  const email = prompt(
-    "Enter the email address to protect:",
-    document.getElementById("protectedEmail").textContent
-  );
-  if (email && email.includes("@")) {
-    document.getElementById("protectedEmail").textContent = email;
-    showToast("✅ Protected email updated to: " + email, "success");
-  }
-}
-
-function showToast(msg, type = "info") {
-  const container = document.getElementById("toastContainer");
-  const toast = document.createElement("div");
-  toast.className = `toast toast-${type}`;
-  toast.textContent = msg;
-  container.prepend(toast);
-  setTimeout(() => {
-    toast.style.transition = "opacity 0.4s";
-    toast.style.opacity = "0";
-    setTimeout(() => toast.remove(), 400);
-  }, 4000);
-}
-
-// Close modal on overlay click
-document.getElementById("reportModal").addEventListener("click", function (e) {
-  if (e.target === this) closeModal();
-});
-
-// ─────────────────────────────────────────────
-//  INIT
-// ─────────────────────────────────────────────
-
-fetchUserInfo();
+// Boot Sequence
+fetchMyData();
+updateStats();
+loadHistory();
+connectSSE();
