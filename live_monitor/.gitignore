@@ -1,0 +1,29 @@
+# Secrets & config — NEVER commit this
+.env
+
+# Logs
+*.log
+securewatch.log
+
+# Database
+securewatch.db
+login_history.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Patch files
+*.patch

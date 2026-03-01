@@ -1,0 +1,19 @@
+[Unit]
+Description=SecureWatch CyberGuard Backend
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/var/www/securewatch
+EnvironmentFile=/var/www/securewatch/.env
+
+# Single worker is REQUIRED for SSE broadcast to work across all clients
+ExecStart=/usr/local/bin/gunicorn -w 1 -b 127.0.0.1:5001 --timeout 120 app:app
+
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/securewatch/access.log
+StandardError=append:/var/log/securewatch/error.log
+
+[Install]
+WantedBy=multi-user.target

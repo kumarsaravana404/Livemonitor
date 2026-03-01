@@ -1,66 +1,142 @@
+"""
+SecureWatch v3.0 — CyberGuard Backend
+Production-hardened: SQLite, API-key auth, geo-IP cache, input sanitisation,
+SSE client cap, structured logging, .env config, gunicorn-compatible SSE.
+
+Run locally : python app.py
+Production  : gunicorn -w 1 -b 127.0.0.1:5001 --timeout 120 app:app
+              # Must run with -w 1 (single worker) for SSE broadcast to work
+"""
+
+import os
+import html
+import json
+import logging
+import re
+import random
+import socket
+import sqlite3
+import threading
+import time
+from datetime import datetime, timezone
+from functools import wraps
+from typing import Any, Callable
+
+import requests as req
+from dotenv import load_dotenv
 from flask import (
     Flask,
-    request,
-    jsonify,
-    send_from_directory,
     Response,
+    jsonify,
+    request,
+    send_from_directory,
     stream_with_context,
 )
 from flask_cors import CORS
-import requests as req
-import socket
-import threading
-import json
-import os
-import re
-import time
-import random
-from datetime import datetime, timezone
-from typing import cast
 
-# ─── App Setup ────────────────────────────────────────────────────────────────
+# ── Environment ───────────────────────────────────────────────────────────────
+load_dotenv()
 
+API_KEY = os.getenv("SECUREWATCH_API_KEY", "change-this-key")
+FLASK_PORT = int(os.getenv("FLASK_PORT", "5001"))
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", "500"))
+GEO_API_URL = os.getenv("GEO_API_URL", "https://ipapi.co/{ip}/json/")
+DB_FILE = "securewatch.db"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    filename="securewatch.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("securewatch")
+
+# ── Flask ─────────────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder=".", static_url_path="")
 _ = CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-HISTORY_FILE = "login_history.json"
-MAX_HISTORY = 500
 LOCK = threading.Lock()
 
-# SSE clients
+# ── SSE clients ───────────────────────────────────────────────────────────────
 _sse_clients: list[list[str]] = []
 _sse_lock = threading.Lock()
 
-# ─── Persistence ──────────────────────────────────────────────────────────────
+# ── Geo-IP cache ──────────────────────────────────────────────────────────────
+_geo_cache: dict[str, dict[str, str | float]] = {}
 
 
-def load_history() -> list[dict[str, str | int | float | None]]:
-    if not os.path.exists(HISTORY_FILE):
-        return []
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = cast(list[dict[str, str | int | float | None]], json.load(f))
-            return data
-    except Exception:
-        return []
+# ── Database ──────────────────────────────────────────────────────────────────
 
 
-def save_history(history: list[dict[str, str | int | float | None]]) -> None:
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history[-MAX_HISTORY:], f, indent=2)
+def get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-# ─── Geo-IP ───────────────────────────────────────────────────────────────────
+def init_db() -> None:
+    with get_db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attempts (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip        TEXT,
+                city      TEXT,
+                country   TEXT,
+                isp       TEXT,
+                latitude  REAL,
+                longitude REAL,
+                region    TEXT,
+                timezone  TEXT,
+                asn       TEXT,
+                os        TEXT,
+                browser   TEXT,
+                device    TEXT,
+                status    TEXT,
+                severity  TEXT,
+                timestamp TEXT,
+                time_str  TEXT
+            )
+        """
+        )
+        conn.commit()
+
+
+# ── Input sanitisation ────────────────────────────────────────────────────────
+
+
+def sanitize(val: Any, max_len: int = 200) -> str:
+    return html.escape(str(val or ""))[:max_len]
+
+
+# ── Authentication middleware ─────────────────────────────────────────────────
+
+
+def require_api_key(f: Callable) -> Callable:
+    @wraps(f)
+    def decorated(*args: Any, **kwargs: Any) -> Any:
+        key = request.headers.get("X-API-Key") or request.args.get("api_key") or ""
+        if key != API_KEY:
+            return jsonify({"error": "Unauthorized — invalid or missing API key"}), 401
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+# ── Geo-IP lookup (cached) ────────────────────────────────────────────────────
 
 
 def get_geo(ip: str) -> dict[str, str | float]:
+    if ip in _geo_cache:
+        return _geo_cache[ip]
+
     try:
-        r = req.get(f"https://ipapi.co/{ip}/json/", timeout=5)
+        url = GEO_API_URL.format(ip=ip)
+        r = req.get(url, timeout=5)
         if r.status_code == 200:
-            d: dict[str, str | float | None] = (
-                r.json() if isinstance(r.json(), dict) else {}
-            )
-            return {
+            raw = r.json()
+            d: dict[str, Any] = raw if isinstance(raw, dict) else {}
+            result: dict[str, str | float] = {
                 "city": str(d.get("city") or "Unknown"),
                 "country": str(d.get("country_name") or "Unknown"),
                 "isp": str(d.get("org") or "Unknown ISP"),
@@ -70,9 +146,12 @@ def get_geo(ip: str) -> dict[str, str | float]:
                 "timezone": str(d.get("timezone") or ""),
                 "asn": str(d.get("asn") or ""),
             }
-    except Exception:
-        pass
-    return {
+            _geo_cache[ip] = result
+            return result
+    except Exception as exc:
+        logger.error("Geo lookup failed for %s: %s", ip, exc)
+
+    fallback: dict[str, str | float] = {
         "city": "Localhost",
         "country": "Loopback",
         "isp": "Internal",
@@ -82,14 +161,18 @@ def get_geo(ip: str) -> dict[str, str | float]:
         "timezone": "",
         "asn": "",
     }
+    return fallback
 
 
-# ─── SSE Push ─────────────────────────────────────────────────────────────────
+# ── SSE Push ──────────────────────────────────────────────────────────────────
 
 
-def push_event(event_type: str, data: dict[str, str | int | float | None]) -> None:
+def push_event(event_type: str, data: dict[str, Any]) -> None:
     payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
     with _sse_lock:
+        # Cap at 50 SSE clients to prevent memory exhaustion
+        if len(_sse_clients) >= 50:
+            _sse_clients.pop(0)
         dead: list[list[str]] = []
         for q in _sse_clients:
             try:
@@ -99,21 +182,22 @@ def push_event(event_type: str, data: dict[str, str | int | float | None]) -> No
         for d in dead:
             if d in _sse_clients:
                 _sse_clients.remove(d)
+            logger.debug("Removed dead SSE client")
 
 
-# ─── Static ───────────────────────────────────────────────────────────────────
+# ── Static ────────────────────────────────────────────────────────────────────
 
 
 @app.route("/")
-def index():
+def index() -> Response:
     return send_from_directory(".", "index.html")
 
 
-# ─── /api/me ──────────────────────────────────────────────────────────────────
+# ── /api/me ───────────────────────────────────────────────────────────────────
 
 
-@app.route("/api/me", methods=["GET"])
-def api_me():
+@app.route("/api/me")
+def api_me() -> Response:
     ip: str = request.headers.get("X-Forwarded-For", request.remote_addr or "")
     if "," in ip:
         ip = ip.split(",")[0].strip()
@@ -123,35 +207,23 @@ def api_me():
         except Exception:
             ip = "127.0.0.1"
     geo = get_geo(ip)
-    return jsonify(
-        {
-            "ip": ip,
-            "city": geo["city"],
-            "country": geo["country"],
-            "isp": geo["isp"],
-            "latitude": geo["latitude"],
-            "longitude": geo["longitude"],
-            "region": geo["region"],
-            "timezone": geo["timezone"],
-            "asn": geo["asn"],
-        }
-    )
+    return jsonify({"ip": ip, **geo})
 
 
-# ─── /api/log ─────────────────────────────────────────────────────────────────
+# ── /api/log ──────────────────────────────────────────────────────────────────
 
 
 @app.route("/api/log", methods=["POST"])
-def api_log():
-    body: dict[str, str | int | float | None] = request.get_json(silent=True) or {}
-    ip: str = str(body.get("ip", "")).strip()
+@require_api_key
+def api_log() -> Response:
+    body: dict[str, Any] = request.get_json(silent=True) or {}
+    ip = sanitize(body.get("ip", ""))
     if not ip:
         return jsonify({"error": "ip required"}), 400
 
     geo = get_geo(ip)
 
-    entry: dict[str, str | int | float | None] = {
-        "id": int(time.time() * 1000),
+    entry: dict[str, Any] = {
         "ip": ip,
         "city": str(geo.get("city", "Unknown")),
         "country": str(geo.get("country", "Unknown")),
@@ -161,50 +233,92 @@ def api_log():
         "region": str(geo.get("region", "")),
         "timezone": str(geo.get("timezone", "")),
         "asn": str(geo.get("asn", "")),
-        "os": str(body.get("os", "Unknown OS")),
-        "browser": str(body.get("browser", "Unknown Browser")),
-        "device": str(body.get("device", "🖥 Desktop")),
-        "status": str(body.get("status", "FAILED")),
-        "severity": str(body.get("severity", "low")),
+        "os": sanitize(body.get("os", "Unknown OS")),
+        "browser": sanitize(body.get("browser", "Unknown Browser")),
+        "device": sanitize(body.get("device", "🖥 Desktop")),
+        "status": sanitize(body.get("status", "FAILED")),
+        "severity": sanitize(body.get("severity", "low")),
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "timeStr": datetime.now().strftime("%d/%m/%y, %H:%M:%S"),
+        "time_str": datetime.now().strftime("%d/%m/%y, %H:%M:%S"),
     }
 
     with LOCK:
-        history = load_history()
-        history.append(entry)
-        save_history(history)
+        with get_db() as conn:
+            cur = conn.execute(
+                """INSERT INTO attempts
+                   (ip,city,country,isp,latitude,longitude,region,timezone,asn,
+                    os,browser,device,status,severity,timestamp,time_str)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    entry["ip"],
+                    entry["city"],
+                    entry["country"],
+                    entry["isp"],
+                    entry["latitude"],
+                    entry["longitude"],
+                    entry["region"],
+                    entry["timezone"],
+                    entry["asn"],
+                    entry["os"],
+                    entry["browser"],
+                    entry["device"],
+                    entry["status"],
+                    entry["severity"],
+                    entry["timestamp"],
+                    entry["time_str"],
+                ),
+            )
+            entry["id"] = cur.lastrowid
+            conn.commit()
 
+    logger.info(
+        "New attempt logged — IP: %s | %s, %s | %s",
+        ip,
+        entry["city"],
+        entry["country"],
+        entry["severity"],
+    )
     push_event("new_attempt", entry)
     return jsonify({"ok": True, "entry": entry})
 
 
-# ─── /api/history ─────────────────────────────────────────────────────────────
+# ── /api/history ──────────────────────────────────────────────────────────────
 
 
-@app.route("/api/history", methods=["GET"])
-def api_history():
+@app.route("/api/history")
+def api_history() -> Response:
     try:
         limit = int(request.args.get("limit", 200))
     except ValueError:
         limit = 200
     with LOCK:
-        history = load_history()
-    return jsonify(list(reversed(history))[:limit])
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM attempts ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+    return jsonify([dict(r) for r in rows])
 
 
-# ─── /api/stats ───────────────────────────────────────────────────────────────
+# ── /api/stats ────────────────────────────────────────────────────────────────
 
 
-@app.route("/api/stats", methods=["GET"])
-def api_stats():
+@app.route("/api/stats")
+def api_stats() -> Response:
     with LOCK:
-        history = load_history()
-    total = len(history)
-    failed = sum(1 for e in history if e.get("status") == "FAILED")
-    blocked = sum(1 for e in history if e.get("status") == "BLOCKED")
-    countries = len({e.get("country") for e in history if e.get("country")})
-    high_risk = sum(1 for e in history if e.get("severity") in ("high", "critical"))
+        with get_db() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]
+            failed = conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE status='FAILED'"
+            ).fetchone()[0]
+            blocked = conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE status='BLOCKED'"
+            ).fetchone()[0]
+            countries = conn.execute(
+                "SELECT COUNT(DISTINCT country) FROM attempts"
+            ).fetchone()[0]
+            high_risk = conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE severity IN ('high','critical')"
+            ).fetchone()[0]
     return jsonify(
         {
             "total": total,
@@ -216,43 +330,49 @@ def api_stats():
     )
 
 
-# ─── /api/clear ───────────────────────────────────────────────────────────────
+# ── /api/clear ────────────────────────────────────────────────────────────────
 
 
 @app.route("/api/clear", methods=["POST"])
-def api_clear():
+@require_api_key
+def api_clear() -> Response:
     with LOCK:
-        save_history([])
+        with get_db() as conn:
+            conn.execute("DELETE FROM attempts")
+            conn.commit()
+    logger.warning("History cleared by client %s", request.remote_addr)
     push_event("history_cleared", {})
     return jsonify({"ok": True})
 
 
-# ─── /api/stream (SSE) ────────────────────────────────────────────────────────
+# ── /api/stream (SSE) ─────────────────────────────────────────────────────────
+# Must run with -w 1 (single worker) for SSE broadcast to work
 
 
 @app.route("/api/stream")
-def api_stream():
+@require_api_key
+def api_stream() -> Response:
     client_buf: list[str] = []
     with _sse_lock:
         _sse_clients.append(client_buf)
+    logger.debug("SSE client connected. Total: %d", len(_sse_clients))
 
     def generate():
-        # Send connected handshake
         yield "event: connected\ndata: {}\n\n"
         try:
             while True:
                 if client_buf:
-                    msg = client_buf.pop(0)
-                    yield msg
+                    yield client_buf.pop(0)
                 else:
                     yield ": heartbeat\n\n"
-                    time.sleep(15)
+                time.sleep(1)  # 1s poll — gunicorn worker-timeout safe
         except GeneratorExit:
             pass
         finally:
             with _sse_lock:
                 if client_buf in _sse_clients:
                     _sse_clients.remove(client_buf)
+            logger.debug("SSE client disconnected. Total: %d", len(_sse_clients))
 
     return Response(
         stream_with_context(generate()),
@@ -265,7 +385,7 @@ def api_stream():
     )
 
 
-# ─── /api/scan ────────────────────────────────────────────────────────────────
+# ── /api/scan ─────────────────────────────────────────────────────────────────
 
 EVIL_DOMAINS = [
     "0day-exploits.net",
@@ -277,7 +397,6 @@ EVIL_DOMAINS = [
     "ddos-hire.xyz",
     "credential-dump.tk",
 ]
-
 VPS_KEYWORDS = [
     "digitalocean",
     "linode",
@@ -293,9 +412,9 @@ VPS_KEYWORDS = [
 
 
 @app.route("/api/scan", methods=["POST"])
-def api_scan():
-    body: dict[str, str | int | float | None] = request.get_json(silent=True) or {}
-    target: str = str(body.get("target", "")).strip()
+def api_scan() -> Response:
+    body: dict[str, Any] = request.get_json(silent=True) or {}
+    target = sanitize(body.get("target", ""))
     if not target:
         return jsonify({"error": "target required"}), 400
 
@@ -312,28 +431,24 @@ def api_scan():
     log(f"[*] Target classified as: {target_type.upper()}", "dim")
 
     if is_ip:
-        log(f"[*] Querying live geo-IP database (ipapi.co)...", "info")
+        log("[*] Querying live geo-IP database (ipapi.co)…", "info")
         geo = get_geo(target)
         log(f"[+] IP: {target}", "success")
         log(f"    City/Country : {geo['city']}, {geo['country']}", "dim")
         log(f"    ISP / ASN    : {geo['isp']} ({geo['asn']})", "dim")
         log(f"    Region / TZ  : {geo['region']} / {geo['timezone']}", "dim")
         log(f"    Coordinates  : {geo['latitude']}, {geo['longitude']}", "dim")
-
         isp_lower = str(geo.get("isp", "")).lower()
         if any(k in isp_lower for k in VPS_KEYWORDS):
             log(
-                f"[!] ISP flagged as cloud/VPS provider — likely proxy or automated attack.",
+                "[!] ISP flagged as cloud/VPS provider — likely proxy or automated attack.",
                 "warn",
             )
-
-        # Reverse DNS
         try:
             rdns = socket.gethostbyaddr(target)[0]
             log(f"[+] Reverse DNS: {rdns}", "info")
         except Exception:
-            log(f"[-] Reverse DNS lookup failed (no PTR record).", "dim")
-
+            log("[-] Reverse DNS lookup failed (no PTR record).", "dim")
     else:
         domain = target.split("@")[-1].lower() if "@" in target else ""
         char_hash = sum(ord(c) for c in target)
@@ -344,31 +459,29 @@ def api_scan():
             "warn",
         )
         if domain:
-            log(f"[*] Domain: {domain} — checking abuse reputation...", "info")
+            log(f"[*] Domain: {domain} — checking abuse reputation…", "info")
             if char_hash % 3 == 0:
                 log(
-                    f"[!] Domain flagged as high-abuse sender in threat intel feeds.",
+                    "[!] Domain flagged as high-abuse sender in threat intel feeds.",
                     "danger",
                 )
             else:
-                log(f"[+] Domain reputation: CLEAN (no known blacklists).", "success")
+                log("[+] Domain reputation: CLEAN (no known blacklists).", "success")
 
-    # Vulnerable domain sampling
     hit_domains = random.sample(EVIL_DOMAINS, random.randint(1, 3))
     log(
-        f"[*] Cross-referencing against {len(EVIL_DOMAINS)} known malicious domains...",
+        f"[*] Cross-referencing against {len(EVIL_DOMAINS)} known malicious domains…",
         "info",
     )
     for d in hit_domains:
         log(f"[!] MATCH: Target has interaction history with → {d}", "danger")
 
-    # Behavioral risk analysis
-    log(f"[*] Running behavioral risk model...", "info")
+    log("[*] Running behavioral risk model…", "info")
     if severity == "high":
-        log(f"[!!!] RISK LEVEL: HIGH — automated exploit pattern detected.", "danger")
-        log(f"[!!!] Recommend immediate firewall block + ISP abuse report.", "danger")
+        log("[!!!] RISK LEVEL: HIGH — automated exploit pattern detected.", "danger")
+        log("[!!!] Recommend immediate firewall block + ISP abuse report.", "danger")
     else:
-        log(f"[+] RISK LEVEL: LOW — no active exploit signatures detected.", "success")
+        log("[+] RISK LEVEL: LOW — no active exploit signatures detected.", "success")
 
     log(f"[*] Scan complete. {len(results)} findings logged.", "success")
     return jsonify(
@@ -381,11 +494,17 @@ def api_scan():
     )
 
 
-# ─── Run ──────────────────────────────────────────────────────────────────────
+# ── Entry Point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    init_db()
+    logger.info("SecureWatch v3.0 starting on port %d", FLASK_PORT)
     print("\n╔══════════════════════════════════════════════╗")
     print("║  SecureWatch v3.0 — CyberGuard Backend       ║")
-    print("║  Running at http://localhost:5001             ║")
+    print(f"║  Running at http://localhost:{FLASK_PORT}             ║")
     print("╚══════════════════════════════════════════════╝\n")
-    app.run(host="0.0.0.0", port=5001, threaded=True, debug=False)
+    app.run(host="0.0.0.0", port=FLASK_PORT, threaded=True, debug=False)
+else:
+    # Called by gunicorn — still need DB initialised
+    init_db()
+    logger.info("SecureWatch v3.0 loaded by gunicorn")
