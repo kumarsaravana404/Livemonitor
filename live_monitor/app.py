@@ -23,7 +23,13 @@ from functools import wraps
 from typing import Any, Callable
 
 import requests as req
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv as _load_dotenv  # type: ignore[import-untyped]
+
+    _load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed — env vars must be set manually
 from flask import (
     Flask,
     Response,
@@ -35,7 +41,6 @@ from flask import (
 from flask_cors import CORS
 
 # ── Environment ───────────────────────────────────────────────────────────────
-load_dotenv()
 
 API_KEY = os.getenv("SECUREWATCH_API_KEY", "change-this-key")
 FLASK_PORT = int(os.getenv("FLASK_PORT", "5001"))
@@ -76,7 +81,7 @@ def get_db() -> sqlite3.Connection:
 
 def init_db() -> None:
     with get_db() as conn:
-        conn.execute(
+        _ = conn.execute(
             """
             CREATE TABLE IF NOT EXISTS attempts (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,22 +110,29 @@ def init_db() -> None:
 # ── Input sanitisation ────────────────────────────────────────────────────────
 
 
-def sanitize(val: Any, max_len: int = 200) -> str:
+def sanitize(val: object, max_len: int = 200) -> str:
     return html.escape(str(val or ""))[:max_len]
 
 
 # ── Authentication middleware ─────────────────────────────────────────────────
 
 
-def require_api_key(f: Callable) -> Callable:
+RouteFunc = Callable[..., Response]
+
+
+def require_api_key(f: RouteFunc) -> RouteFunc:
     @wraps(f)
-    def decorated(*args: Any, **kwargs: Any) -> Any:
+    def decorated(*args: object, **kwargs: object) -> Response:
         key = request.headers.get("X-API-Key") or request.args.get("api_key") or ""
         if key != API_KEY:
-            return jsonify({"error": "Unauthorized — invalid or missing API key"}), 401
-        return f(*args, **kwargs)
+            resp: Response = jsonify(
+                {"error": "Unauthorized — invalid or missing API key"}
+            )
+            resp.status_code = 401
+            return resp
+        return f(*args, **kwargs)  # type: ignore[arg-type]
 
-    return decorated
+    return decorated  # type: ignore[return-value]
 
 
 # ── Geo-IP lookup (cached) ────────────────────────────────────────────────────
@@ -134,14 +146,14 @@ def get_geo(ip: str) -> dict[str, str | float]:
         url = GEO_API_URL.format(ip=ip)
         r = req.get(url, timeout=5)
         if r.status_code == 200:
-            raw = r.json()
-            d: dict[str, Any] = raw if isinstance(raw, dict) else {}
+            raw: object = r.json()
+            d: dict[str, object] = raw if isinstance(raw, dict) else {}
             result: dict[str, str | float] = {
                 "city": str(d.get("city") or "Unknown"),
                 "country": str(d.get("country_name") or "Unknown"),
                 "isp": str(d.get("org") or "Unknown ISP"),
-                "latitude": float(d.get("latitude") or 0.0),
-                "longitude": float(d.get("longitude") or 0.0),
+                "latitude": float(d.get("latitude") or 0.0),  # type: ignore[arg-type]
+                "longitude": float(d.get("longitude") or 0.0),  # type: ignore[arg-type]
                 "region": str(d.get("region") or ""),
                 "timezone": str(d.get("timezone") or ""),
                 "asn": str(d.get("asn") or ""),
@@ -216,10 +228,12 @@ def api_me() -> Response:
 @app.route("/api/log", methods=["POST"])
 @require_api_key
 def api_log() -> Response:
-    body: dict[str, Any] = request.get_json(silent=True) or {}
+    body: dict[str, object] = request.get_json(silent=True) or {}
     ip = sanitize(body.get("ip", ""))
     if not ip:
-        return jsonify({"error": "ip required"}), 400
+        bad: Response = jsonify({"error": "ip required"})
+        bad.status_code = 400
+        return bad
 
     geo = get_geo(ip)
 
@@ -235,7 +249,7 @@ def api_log() -> Response:
         "asn": str(geo.get("asn", "")),
         "os": sanitize(body.get("os", "Unknown OS")),
         "browser": sanitize(body.get("browser", "Unknown Browser")),
-        "device": sanitize(body.get("device", "🖥 Desktop")),
+        "device": sanitize(body.get("device", "\U0001f5a5 Desktop")),
         "status": sanitize(body.get("status", "FAILED")),
         "severity": sanitize(body.get("severity", "low")),
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -274,9 +288,9 @@ def api_log() -> Response:
     logger.info(
         "New attempt logged — IP: %s | %s, %s | %s",
         ip,
-        entry["city"],
-        entry["country"],
-        entry["severity"],
+        str(entry["city"]),
+        str(entry["country"]),
+        str(entry["severity"]),
     )
     push_event("new_attempt", entry)
     return jsonify({"ok": True, "entry": entry})
@@ -296,7 +310,7 @@ def api_history() -> Response:
             rows = conn.execute(
                 "SELECT * FROM attempts ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([dict(r) for r in rows])  # type: ignore[arg-type]
 
 
 # ── /api/stats ────────────────────────────────────────────────────────────────
@@ -321,11 +335,11 @@ def api_stats() -> Response:
             ).fetchone()[0]
     return jsonify(
         {
-            "total": total,
-            "failed": failed,
-            "blocked": blocked,
-            "countries": countries,
-            "high_risk": high_risk,
+            "total": int(total),
+            "failed": int(failed),
+            "blocked": int(blocked),
+            "countries": int(countries),
+            "high_risk": int(high_risk),
         }
     )
 
@@ -338,7 +352,7 @@ def api_stats() -> Response:
 def api_clear() -> Response:
     with LOCK:
         with get_db() as conn:
-            conn.execute("DELETE FROM attempts")
+            _ = conn.execute("DELETE FROM attempts")
             conn.commit()
     logger.warning("History cleared by client %s", request.remote_addr)
     push_event("history_cleared", {})
