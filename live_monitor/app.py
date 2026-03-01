@@ -20,12 +20,12 @@ import threading
 import time
 from datetime import datetime, timezone
 from functools import wraps
-from typing import Any, Callable
+from typing import Callable
 
 import requests as req
 
 try:
-    from dotenv import load_dotenv as _load_dotenv  # type: ignore[import-untyped]
+    from dotenv import load_dotenv as _load_dotenv  # type: ignore[import-untyped,import-not-found]
 
     _load_dotenv()
 except ImportError:
@@ -152,8 +152,8 @@ def get_geo(ip: str) -> dict[str, str | float]:
                 "city": str(d.get("city") or "Unknown"),
                 "country": str(d.get("country_name") or "Unknown"),
                 "isp": str(d.get("org") or "Unknown ISP"),
-                "latitude": float(d.get("latitude") or 0.0),  # type: ignore[arg-type]
-                "longitude": float(d.get("longitude") or 0.0),  # type: ignore[arg-type]
+                "latitude": float(str(d.get("latitude") or 0.0)),
+                "longitude": float(str(d.get("longitude") or 0.0)),
                 "region": str(d.get("region") or ""),
                 "timezone": str(d.get("timezone") or ""),
                 "asn": str(d.get("asn") or ""),
@@ -179,7 +179,7 @@ def get_geo(ip: str) -> dict[str, str | float]:
 # ── SSE Push ──────────────────────────────────────────────────────────────────
 
 
-def push_event(event_type: str, data: dict[str, Any]) -> None:
+def push_event(event_type: str, data: dict[str, object]) -> None:
     payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
     with _sse_lock:
         # Cap at 50 SSE clients to prevent memory exhaustion
@@ -237,13 +237,13 @@ def api_log() -> Response:
 
     geo = get_geo(ip)
 
-    entry: dict[str, Any] = {
+    entry: dict[str, object] = {
         "ip": ip,
         "city": str(geo.get("city", "Unknown")),
         "country": str(geo.get("country", "Unknown")),
         "isp": str(geo.get("isp", "Unknown ISP")),
-        "latitude": float(geo.get("latitude", 0.0) or 0.0),
-        "longitude": float(geo.get("longitude", 0.0) or 0.0),
+        "latitude": float(str(geo.get("latitude", 0.0) or 0.0)),
+        "longitude": float(str(geo.get("longitude", 0.0) or 0.0)),
         "region": str(geo.get("region", "")),
         "timezone": str(geo.get("timezone", "")),
         "asn": str(geo.get("asn", "")),
@@ -288,9 +288,9 @@ def api_log() -> Response:
     logger.info(
         "New attempt logged — IP: %s | %s, %s | %s",
         ip,
-        str(entry["city"]),
-        str(entry["country"]),
-        str(entry["severity"]),
+        entry.get("city"),
+        entry.get("country"),
+        entry.get("severity"),
     )
     push_event("new_attempt", entry)
     return jsonify({"ok": True, "entry": entry})
@@ -335,11 +335,11 @@ def api_stats() -> Response:
             ).fetchone()[0]
     return jsonify(
         {
-            "total": int(total),
-            "failed": int(failed),
-            "blocked": int(blocked),
-            "countries": int(countries),
-            "high_risk": int(high_risk),
+            "total": int(total),  # type: ignore[arg-type]
+            "failed": int(failed),  # type: ignore[arg-type]
+            "blocked": int(blocked),  # type: ignore[arg-type]
+            "countries": int(countries),  # type: ignore[arg-type]
+            "high_risk": int(high_risk),  # type: ignore[arg-type]
         }
     )
 
@@ -427,10 +427,12 @@ VPS_KEYWORDS = [
 
 @app.route("/api/scan", methods=["POST"])
 def api_scan() -> Response:
-    body: dict[str, Any] = request.get_json(silent=True) or {}
+    body: dict[str, object] = request.get_json(silent=True) or {}
     target = sanitize(body.get("target", ""))
     if not target:
-        return jsonify({"error": "target required"}), 400
+        bad: Response = jsonify({"error": "target required"})
+        bad.status_code = 400
+        return bad
 
     results: list[dict[str, str]] = []
 
