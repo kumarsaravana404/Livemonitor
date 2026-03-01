@@ -39,8 +39,8 @@ def load_history() -> list[dict[str, str | int | float | None]]:
         return []
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
+            data = cast(list[dict[str, str | int | float | None]], json.load(f))
+            return data
     except Exception:
         return []
 
@@ -93,9 +93,9 @@ def push_event(event_type: str, data: dict[str, str | int | float | None]) -> No
         dead: list[list[str]] = []
         for q in _sse_clients:
             try:
-                cast(list[str], q).append(payload)
+                q.append(payload)
             except Exception:
-                dead.append(cast(list[str], q))
+                dead.append(q)
         for d in dead:
             if d in _sse_clients:
                 _sse_clients.remove(d)
