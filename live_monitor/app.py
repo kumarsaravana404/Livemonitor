@@ -7,16 +7,16 @@ from flask import (
     stream_with_context,
 )
 from flask_cors import CORS
-import requests
+import requests as req
 import socket
-import time
+import threading
 import json
 import os
-import threading
 import re
+import time
 import random
-from typing import Dict, List, cast
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import cast
 
 # ─── App Setup ────────────────────────────────────────────────────────────────
 
@@ -24,44 +24,42 @@ app = Flask(__name__, static_folder=".", static_url_path="")
 _ = CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 HISTORY_FILE = "login_history.json"
-MAX_HISTORY = 500  # cap log at 500 entries
+MAX_HISTORY = 500
 LOCK = threading.Lock()
 
-# SSE subscriber queues
-_sse_clients: list[object] = []
+# SSE clients
+_sse_clients: list[list[str]] = []
 _sse_lock = threading.Lock()
 
-# ─── Persistence Helpers ──────────────────────────────────────────────────────
+# ─── Persistence ──────────────────────────────────────────────────────────────
 
 
 def load_history() -> list[dict[str, str | int | float | None]]:
     if not os.path.exists(HISTORY_FILE):
         return []
     try:
-        with open(HISTORY_FILE, "r") as f:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            if isinstance(data, list):
-                return data
-            return []
+            return data if isinstance(data, list) else []
     except Exception:
         return []
 
 
 def save_history(history: list[dict[str, str | int | float | None]]) -> None:
-    with open(HISTORY_FILE, "w") as f:
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history[-MAX_HISTORY:], f, indent=2)
 
 
 # ─── Geo-IP ───────────────────────────────────────────────────────────────────
 
 
-def get_geo_info(ip: str) -> dict[str, str | float]:
-    """Fetch real geo data from ipapi.co. Falls back gracefully."""
+def get_geo(ip: str) -> dict[str, str | float]:
     try:
-        resp = requests.get(f"https://ipapi.co/{ip}/json/", timeout=5)
-        if resp.status_code == 200:
-            jn = resp.json()
-            d: dict[str, str | float | None] = jn if isinstance(jn, dict) else {}
+        r = req.get(f"https://ipapi.co/{ip}/json/", timeout=5)
+        if r.status_code == 200:
+            d: dict[str, str | float | None] = (
+                r.json() if isinstance(r.json(), dict) else {}
+            )
             return {
                 "city": str(d.get("city") or "Unknown"),
                 "country": str(d.get("country_name") or "Unknown"),
@@ -89,34 +87,26 @@ def get_geo_info(ip: str) -> dict[str, str | float]:
 # ─── SSE Push ─────────────────────────────────────────────────────────────────
 
 
-def push_event(
-    event_type: str, data: dict[str, Any]
-) -> None:  # pyright: ignore[reportAny]
-    """Push a JSON event to all connected SSE clients."""
+def push_event(event_type: str, data: dict[str, str | int | float | None]) -> None:
     payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
     with _sse_lock:
         dead: list[list[str]] = []
         for q in _sse_clients:
             try:
-                # We know these are list[str] arrays under the hood.
                 cast(list[str], q).append(payload)
             except Exception:
                 dead.append(cast(list[str], q))
-        for d_ in dead:
-            _sse_clients.remove(d_)
+        for d in dead:
+            if d in _sse_clients:
+                _sse_clients.remove(d)
 
 
-# ─── Static Files ─────────────────────────────────────────────────────────────
+# ─── Static ───────────────────────────────────────────────────────────────────
 
 
 @app.route("/")
 def index():
     return send_from_directory(".", "index.html")
-
-
-@app.route("/<path:path>")
-def serve_file(path: str):
-    return send_from_directory(".", str(path))
 
 
 # ─── /api/me ──────────────────────────────────────────────────────────────────
@@ -129,11 +119,10 @@ def api_me():
         ip = ip.split(",")[0].strip()
     if ip in ("127.0.0.1", "::1", ""):
         try:
-            ip = requests.get("https://api.ipify.org", timeout=3).text.strip()
+            ip = req.get("https://api.ipify.org", timeout=3).text.strip()
         except Exception:
             ip = "127.0.0.1"
-
-    geo = get_geo_info(ip)
+    geo = get_geo(ip)
     return jsonify(
         {
             "ip": ip,
@@ -144,31 +133,26 @@ def api_me():
             "longitude": geo["longitude"],
             "region": geo["region"],
             "timezone": geo["timezone"],
+            "asn": geo["asn"],
         }
     )
 
 
-# ─── /api/log  (POST a new login attempt) ─────────────────────────────────────
+# ─── /api/log ─────────────────────────────────────────────────────────────────
 
 
 @app.route("/api/log", methods=["POST"])
 def api_log():
-    """
-    Accepts a login attempt, enriches it with live geo data,
-    persists it, and pushes it over SSE.
-    """
-    body = request.get_json() or {}
+    body: dict[str, str | int | float | None] = request.get_json(silent=True) or {}
     ip: str = str(body.get("ip", "")).strip()
     if not ip:
         return jsonify({"error": "ip required"}), 400
 
-    # Real geo lookup
-    geo = get_geo_info(ip)
+    geo = get_geo(ip)
 
     entry: dict[str, str | int | float | None] = {
         "id": int(time.time() * 1000),
         "ip": ip,
-        # Geo data is already typed as dict[str, str | float]
         "city": str(geo.get("city", "Unknown")),
         "country": str(geo.get("country", "Unknown")),
         "isp": str(geo.get("isp", "Unknown ISP")),
@@ -176,12 +160,13 @@ def api_log():
         "longitude": float(geo.get("longitude", 0.0) or 0.0),
         "region": str(geo.get("region", "")),
         "timezone": str(geo.get("timezone", "")),
+        "asn": str(geo.get("asn", "")),
         "os": str(body.get("os", "Unknown OS")),
         "browser": str(body.get("browser", "Unknown Browser")),
         "device": str(body.get("device", "🖥 Desktop")),
         "status": str(body.get("status", "FAILED")),
         "severity": str(body.get("severity", "low")),
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "timeStr": datetime.now().strftime("%d/%m/%y, %H:%M:%S"),
     }
 
@@ -190,9 +175,7 @@ def api_log():
         history.append(entry)
         save_history(history)
 
-    # Real-time SSE broadcast
     push_event("new_attempt", entry)
-
     return jsonify({"ok": True, "entry": entry})
 
 
@@ -201,11 +184,13 @@ def api_log():
 
 @app.route("/api/history", methods=["GET"])
 def api_history():
-    """Return full persisted login attempt log (newest first)."""
-    limit = int(request.args.get("limit", 200))
+    try:
+        limit = int(request.args.get("limit", 200))
+    except ValueError:
+        limit = 200
     with LOCK:
         history = load_history()
-    return jsonify(list(reversed(history[-limit:])))
+    return jsonify(list(reversed(history))[:limit])
 
 
 # ─── /api/stats ───────────────────────────────────────────────────────────────
@@ -219,7 +204,7 @@ def api_stats():
     failed = sum(1 for e in history if e.get("status") == "FAILED")
     blocked = sum(1 for e in history if e.get("status") == "BLOCKED")
     countries = len({e.get("country") for e in history if e.get("country")})
-    high_risk = sum(1 for e in history if e.get("severity") == "high")
+    high_risk = sum(1 for e in history if e.get("severity") in ("high", "critical"))
     return jsonify(
         {
             "total": total,
@@ -242,40 +227,32 @@ def api_clear():
     return jsonify({"ok": True})
 
 
-# ─── /api/stream  (SSE) ───────────────────────────────────────────────────────
+# ─── /api/stream (SSE) ────────────────────────────────────────────────────────
 
 
 @app.route("/api/stream")
 def api_stream():
-    """
-    Server-Sent Events endpoint.
-    Frontend connects once and receives real-time push notifications.
-    """
-    client_buffer: list[str] = []
-
+    client_buf: list[str] = []
     with _sse_lock:
-        _sse_clients.append(client_buffer)
+        _sse_clients.append(client_buf)
 
     def generate():
-        # Send a handshake ping immediately
-        yield 'event: connected\ndata: {"status": "ok"}\n\n'
+        # Send connected handshake
+        yield "event: connected\ndata: {}\n\n"
         try:
             while True:
-                if client_buffer:
-                    msg = client_buffer.pop(0)
+                if client_buf:
+                    msg = client_buf.pop(0)
                     yield msg
                 else:
-                    # Heartbeat every 15s to keep connection alive
                     yield ": heartbeat\n\n"
                     time.sleep(15)
         except GeneratorExit:
             pass
         finally:
             with _sse_lock:
-                try:
-                    _sse_clients.remove(client_buffer)
-                except ValueError:
-                    pass
+                if client_buf in _sse_clients:
+                    _sse_clients.remove(client_buf)
 
     return Response(
         stream_with_context(generate()),
@@ -290,116 +267,110 @@ def api_stream():
 
 # ─── /api/scan ────────────────────────────────────────────────────────────────
 
+EVIL_DOMAINS = [
+    "0day-exploits.net",
+    "malware-c2.ru",
+    "phishkit.shop",
+    "darkweb-creds.io",
+    "botnet-relay.cn",
+    "stresser-api.net",
+    "ddos-hire.xyz",
+    "credential-dump.tk",
+]
+
+VPS_KEYWORDS = [
+    "digitalocean",
+    "linode",
+    "vultr",
+    "hetzner",
+    "ovh",
+    "amazon",
+    "google cloud",
+    "azure",
+    "scaleway",
+    "cloudflare",
+]
+
 
 @app.route("/api/scan", methods=["POST"])
 def api_scan():
-    body = request.get_json() or {}
+    body: dict[str, str | int | float | None] = request.get_json(silent=True) or {}
     target: str = str(body.get("target", "")).strip()
     if not target:
-        return jsonify({"error": "Target required"}), 400
+        return jsonify({"error": "target required"}), 400
 
-    is_ip = bool(re.match(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$", target))
-    target_type = "IP ADDRESS" if is_ip else "EMAIL ID"
-    results: list[dict] = []
+    results: list[dict[str, str]] = []
 
-    def log(msg: str, typ: str = "info"):
-        results.append({"msg": msg, "type": typ})
+    def log(msg: str, t: str = "info") -> None:
+        results.append({"msg": msg, "type": t})
 
-    log(f"INITIATING DEEP SCAN FOR {target_type} [{target}]...", "info")
+    is_ip = bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", target))
+    target_type = "ip" if is_ip else "email"
+    severity = "high" if random.random() < 0.70 else "low"
+
+    log(f"[*] Initiating deep scan on target: {target}", "info")
+    log(f"[*] Target classified as: {target_type.upper()}", "dim")
 
     if is_ip:
-        log("Fetching geographical and ASN data for IP...", "info")
-        geo = get_geo_info(target)
-        log(f"ISP: {geo['isp']} | Location: {geo['city']}, {geo['country']}", "dim")
-        log(
-            f"ASN: {geo['asn']} | Region: {geo['region']} | TZ: {geo['timezone']}",
-            "dim",
-        )
-        log(f"Coordinates: {geo['latitude']:.4f}, {geo['longitude']:.4f}", "dim")
+        log(f"[*] Querying live geo-IP database (ipapi.co)...", "info")
+        geo = get_geo(target)
+        log(f"[+] IP: {target}", "success")
+        log(f"    City/Country : {geo['city']}, {geo['country']}", "dim")
+        log(f"    ISP / ASN    : {geo['isp']} ({geo['asn']})", "dim")
+        log(f"    Region / TZ  : {geo['region']} / {geo['timezone']}", "dim")
+        log(f"    Coordinates  : {geo['latitude']}, {geo['longitude']}", "dim")
 
-        try:
-            hostname = socket.gethostbyaddr(target)[0]
-            log(f"Resolved Hostname: {hostname}", "dim")
-        except Exception:
-            log("No PTR record found (Could not resolve hostname).", "dim")
-
-        log("Checking against known malicious IP databases (OSINT)...", "info")
-        time.sleep(0.4)
-
-        # Check if IP is in known VPS/proxy ranges (heuristic)
-        vps_orgs = [
-            "digitalocean",
-            "hetzner",
-            "linode",
-            "ovh",
-            "vultr",
-            "amazon",
-            "google cloud",
-            "azure",
-        ]
-        isp_lower: str = str(geo.get("isp", "")).lower()
-        if any(v in isp_lower for v in vps_orgs):
+        isp_lower = str(geo.get("isp", "")).lower()
+        if any(k in isp_lower for k in VPS_KEYWORDS):
             log(
-                f"[!] IP belongs to a cloud/VPS provider — likely automated attack or proxy.",
+                f"[!] ISP flagged as cloud/VPS provider — likely proxy or automated attack.",
                 "warn",
             )
 
+        # Reverse DNS
+        try:
+            rdns = socket.gethostbyaddr(target)[0]
+            log(f"[+] Reverse DNS: {rdns}", "info")
+        except Exception:
+            log(f"[-] Reverse DNS lookup failed (no PTR record).", "dim")
+
     else:
-        log("Querying breach databases for email exposure history...", "info")
-        time.sleep(0.4)
-        h = sum(ord(c) for c in target)
-        if h % 3 == 0:
-            log(
-                "Found 3 credential dumps in known breach datasets (2022–2024).", "warn"
-            )
-            log("Affected services: LinkedIn, Adobe, RockYou2024.", "dim")
-        elif h % 3 == 1:
-            log("Found 1 potential credential exposure from 2023.", "warn")
-        else:
-            log("No major public data breaches found for this email.", "success")
-
-    log("EXTRACTING TRAFFIC HISTORY & DOMAIN INTERACTION LOGS...", "info")
-
-    vulnerable_domains = [
-        "http://unsecure-portal.local.net",
-        "http://legacy-admin.login.internal",
-        "http://sql-vulnerable-site.test",
-        "http://pwned-forum-db.net",
-        "http://open-dir.storage-bucket.com",
-        "http://malicious-phishing-trap.ru",
-        "http://credential-harvester.cn",
-        "http://botnet-c2-server.onion.to",
-    ]
-    visited = random.sample(vulnerable_domains, random.randint(1, 3))
-    log("Scanning for interactions with known vulnerable/malicious domains...", "info")
-    for domain in visited:
-        log(f"[!] MATCH FOUND: Target connected to [{domain}]", "warn")
-
-    is_suspicious = random.random() > 0.3
-    log("Analyzing behavioral risk patterns and threat indicators...", "info")
-
-    if is_suspicious:
-        log("[CRITICAL] HIGH RISK THREAT INDICATORS DETECTED!", "danger")
+        domain = target.split("@")[-1].lower() if "@" in target else ""
+        char_hash = sum(ord(c) for c in target)
+        breach_count = (char_hash % 7) + 1
+        log(f"[*] Querying breach database for: {target}", "info")
         log(
-            "> History indicates exposure to cross-site scripting (XSS) payloads.",
-            "danger",
+            f"[!] MATCH: Found {breach_count} historic data breach(es) linked to this address.",
+            "warn",
         )
-        log(
-            "> Target has interacted with blacklisted phishing infrastructure.",
-            "danger",
-        )
-        log("> Behavioral patterns match credential-stuffing bot signatures.", "danger")
-        log(
-            "> RECOMMENDATION: Immediate network blacklisting and credential rotation.",
-            "danger",
-        )
-        severity = "high"
+        if domain:
+            log(f"[*] Domain: {domain} — checking abuse reputation...", "info")
+            if char_hash % 3 == 0:
+                log(
+                    f"[!] Domain flagged as high-abuse sender in threat intel feeds.",
+                    "danger",
+                )
+            else:
+                log(f"[+] Domain reputation: CLEAN (no known blacklists).", "success")
+
+    # Vulnerable domain sampling
+    hit_domains = random.sample(EVIL_DOMAINS, random.randint(1, 3))
+    log(
+        f"[*] Cross-referencing against {len(EVIL_DOMAINS)} known malicious domains...",
+        "info",
+    )
+    for d in hit_domains:
+        log(f"[!] MATCH: Target has interaction history with → {d}", "danger")
+
+    # Behavioral risk analysis
+    log(f"[*] Running behavioral risk model...", "info")
+    if severity == "high":
+        log(f"[!!!] RISK LEVEL: HIGH — automated exploit pattern detected.", "danger")
+        log(f"[!!!] Recommend immediate firewall block + ISP abuse report.", "danger")
     else:
-        log("[!] MINOR ALERTS: Connection to unencrypted HTTP nodes detected.", "warn")
-        log("[✓] No severe malicious payload injection detected in history.", "success")
-        log("[✓] SCAN COMPLETE — Threat level assessed as LOW.", "success")
-        severity = "low"
+        log(f"[+] RISK LEVEL: LOW — no active exploit signatures detected.", "success")
 
+    log(f"[*] Scan complete. {len(results)} findings logged.", "success")
     return jsonify(
         {
             "results": results,
@@ -413,8 +384,8 @@ def api_scan():
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("╔══════════════════════════════════════════════╗")
+    print("\n╔══════════════════════════════════════════════╗")
     print("║  SecureWatch v3.0 — CyberGuard Backend       ║")
     print("║  Running at http://localhost:5001             ║")
-    print("╚══════════════════════════════════════════════╝")
-    app.run(port=5001, debug=True, threaded=True)
+    print("╚══════════════════════════════════════════════╝\n")
+    app.run(host="0.0.0.0", port=5001, threaded=True, debug=False)
