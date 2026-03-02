@@ -23,15 +23,15 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from functools import wraps
 from logging.handlers import RotatingFileHandler
-from typing import Callable
+from typing import Any, Callable
 
 import requests as req
 
 # ── .env loading ──────────────────────────────────────────────────────────────
 try:
-    import dotenv  # pyright: ignore[reportMissingImports]
+    import dotenv
 
-    dotenv.load_dotenv()  # pyright: ignore[reportUnknownMemberType]
+    _ = dotenv.load_dotenv()
 except ImportError:
     pass  # python-dotenv not installed — env vars must be set manually
 
@@ -47,17 +47,17 @@ from flask_cors import CORS
 
 # ── Environment / Config ──────────────────────────────────────────────────────
 # FIX #1: Hard startup error if API key not configured
-API_KEY = os.getenv("SECUREWATCH_API_KEY", "")
-if not API_KEY or API_KEY == "change-this-key":
+app_api_key = os.getenv("SECUREWATCH_API_KEY", "")
+if not app_api_key or app_api_key == "change-this-key":
     _env = os.getenv("FLASK_ENV", "production")
     if _env != "development":
         sys.exit(
             "\n[FATAL] SECUREWATCH_API_KEY is not set or still uses the default.\n"
-            "Set it in your .env file:  SECUREWATCH_API_KEY=<strong-random-token>\n"
-            'Generate one: python3 -c "import secrets; print(secrets.token_urlsafe(32))"\n'
+            + "Set it in your .env file:  SECUREWATCH_API_KEY=<strong-random-token>\n"
+            + 'Generate one: python3 -c "import secrets; print(secrets.token_urlsafe(32))"\n'
         )
     else:
-        API_KEY = "dev-insecure-key"  # dev-only fallback
+        app_api_key = "dev-insecure-key"  # dev-only fallback
 
 FLASK_PORT = int(os.getenv("FLASK_PORT", "5001"))
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "500"))
@@ -111,15 +111,15 @@ def get_db() -> sqlite3.Connection:
     if conn is None:
         conn = sqlite3.connect(DB_FILE, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        _ = conn.execute("PRAGMA journal_mode=WAL")
+        _ = conn.execute("PRAGMA synchronous=NORMAL")
         _thread_local.conn = conn
     return conn
 
 
 def init_db() -> None:
     with get_db() as conn:
-        conn.execute(
+        _ = conn.execute(
             """
             CREATE TABLE IF NOT EXISTS attempts (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,7 +148,7 @@ def init_db() -> None:
 # ── Graceful shutdown (FIX #13) ───────────────────────────────────────────────
 def _shutdown(signum: int, _frame: object) -> None:
     logger.info("SecureWatch shutting down (signal %d)…", signum)
-    conn = getattr(_thread_local, "conn", None)
+    conn: sqlite3.Connection | None = getattr(_thread_local, "conn", None)
     if conn:
         try:
             conn.close()
@@ -157,9 +157,9 @@ def _shutdown(signum: int, _frame: object) -> None:
     sys.exit(0)
 
 
-signal.signal(signal.SIGTERM, _shutdown)
+_ = signal.signal(signal.SIGTERM, _shutdown)
 try:
-    signal.signal(signal.SIGINT, _shutdown)
+    _ = signal.signal(signal.SIGINT, _shutdown)
 except OSError:
     pass  # Windows may complain in sub-threads
 
@@ -184,17 +184,17 @@ def validate_ip(ip: str) -> bool:
 
 
 # ── Authentication middleware ──────────────────────────────────────────────────
-RouteFunc = Callable[..., Response]
+RouteFunc = Callable[..., Any]
 
 
 def require_api_key(f: RouteFunc) -> RouteFunc:
     @wraps(f)
-    def decorated(*args: object, **kwargs: object) -> Response:
+    def decorated(*args: object, **kwargs: object) -> Any:
         key = request.headers.get("X-API-Key") or request.args.get("api_key") or ""
-        if key != API_KEY:
+        if key != app_api_key:
             # FIX #4: status code set correctly
-            return jsonify({"error": "Unauthorized — invalid or missing API key"}), 401  # type: ignore[return-value]
-        return f(*args, **kwargs)  # type: ignore[arg-type]
+            return jsonify({"error": "Unauthorized — invalid or missing API key"}), 401
+        return f(*args, **kwargs)
 
     return decorated  # type: ignore[return-value]
 
@@ -241,8 +241,8 @@ def get_geo(ip: str) -> dict[str, str | float]:
         url = GEO_API_URL.format(ip=ip)
         r = req.get(url, timeout=5)
         if r.status_code == 200:
-            raw = r.json()
-            d: dict[str, object] = raw if isinstance(raw, dict) else {}
+            raw: Any = r.json()
+            d: dict[str, Any] = raw if isinstance(raw, dict) else {}
             result: dict[str, str | float] = {
                 "city": str(d.get("city") or "Unknown"),
                 "country": str(d.get("country_name") or "Unknown"),
@@ -283,9 +283,9 @@ def push_event(event_type: str, data: dict[str, object]) -> None:
 
 # ── DB pruning helper (FIX #15) ───────────────────────────────────────────────
 def _prune_history(conn: sqlite3.Connection) -> None:
-    conn.execute(
+    _ = conn.execute(
         "DELETE FROM attempts WHERE id NOT IN "
-        "(SELECT id FROM attempts ORDER BY id DESC LIMIT ?)",
+        + "(SELECT id FROM attempts ORDER BY id DESC LIMIT ?)",
         (MAX_HISTORY,),
     )
 
@@ -298,14 +298,14 @@ def index() -> Response:
 
 # ── /health (FIX #14) ─────────────────────────────────────────────────────────
 @app.route("/health")
-def health() -> Response:
+def health() -> Any:
     try:
         with get_db() as conn:
-            conn.execute("SELECT 1").fetchone()
+            _ = conn.execute("SELECT 1").fetchone()
         return jsonify({"status": "ok", "db": "ok", "sse_clients": len(_sse_clients)})
     except Exception as exc:
         logger.error("Health check failed: %s", exc)
-        return jsonify({"status": "error", "detail": str(exc)}), 500  # type: ignore[return-value]
+        return jsonify({"status": "error", "detail": str(exc)}), 500
 
 
 # ── /api/me ───────────────────────────────────────────────────────────────────
@@ -326,15 +326,15 @@ def api_me() -> Response:
 # ── /api/log ──────────────────────────────────────────────────────────────────
 @app.route("/api/log", methods=["POST"])
 @require_api_key
-def api_log() -> Response:
-    body: dict[str, object] = request.get_json(silent=True) or {}
+def api_log() -> Any:
+    body: dict[str, Any] = request.get_json(silent=True) or {}
     ip = sanitize(body.get("ip", ""))
     if not ip:
-        return jsonify({"error": "ip required"}), 400  # type: ignore[return-value]
+        return jsonify({"error": "ip required"}), 400
 
     # FIX #12: validate IP
     if not validate_ip(ip):
-        return jsonify({"error": "invalid ip address"}), 400  # type: ignore[return-value]
+        return jsonify({"error": "invalid ip address"}), 400
 
     geo = get_geo(ip)
 
@@ -407,45 +407,53 @@ def api_log() -> Response:
 
 # ── /api/history ──────────────────────────────────────────────────────────────
 @app.route("/api/history")
-def api_history() -> Response:
+def api_history() -> Any:
     try:
         limit = min(int(request.args.get("limit", 200)), MAX_HISTORY)
     except ValueError:
         limit = 200
     with LOCK:
-        rows = (
+        import typing
+
+        rows: typing.Sequence[sqlite3.Row] = (
             get_db()
             .execute("SELECT * FROM attempts ORDER BY id DESC LIMIT ?", (limit,))
             .fetchall()
         )
-    return jsonify([dict(r) for r in rows])  # type: ignore[arg-type]
+    return jsonify([dict(r) for r in rows])
 
 
 # ── /api/stats ────────────────────────────────────────────────────────────────
 @app.route("/api/stats")
-def api_stats() -> Response:
+def api_stats() -> Any:
     with LOCK:
         conn = get_db()
-        total = conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]
-        failed = conn.execute(
-            "SELECT COUNT(*) FROM attempts WHERE status='FAILED'"
-        ).fetchone()[0]
-        blocked = conn.execute(
-            "SELECT COUNT(*) FROM attempts WHERE status='BLOCKED'"
-        ).fetchone()[0]
-        countries = conn.execute(
-            "SELECT COUNT(DISTINCT country) FROM attempts"
-        ).fetchone()[0]
-        high_risk = conn.execute(
-            "SELECT COUNT(*) FROM attempts WHERE severity IN ('high','critical')"
-        ).fetchone()[0]
+        total: int = int(conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0])
+        failed: int = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE status='FAILED'"
+            ).fetchone()[0]
+        )
+        blocked: int = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE status='BLOCKED'"
+            ).fetchone()[0]
+        )
+        countries: int = int(
+            conn.execute("SELECT COUNT(DISTINCT country) FROM attempts").fetchone()[0]
+        )
+        high_risk: int = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE severity IN ('high','critical')"
+            ).fetchone()[0]
+        )
     return jsonify(
         {
-            "total": int(total),
-            "failed": int(failed),
-            "blocked": int(blocked),
-            "countries": int(countries),
-            "high_risk": int(high_risk),
+            "total": total,
+            "failed": failed,
+            "blocked": blocked,
+            "countries": countries,
+            "high_risk": high_risk,
         }
     )
 
@@ -453,14 +461,14 @@ def api_stats() -> Response:
 # ── /api/clear (FIX #8: rate limiting) ───────────────────────────────────────
 @app.route("/api/clear", methods=["POST"])
 @require_api_key
-def api_clear() -> Response:
+def api_clear() -> Any:
     client_ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown")
     # FIX #8: rate limit — 3 calls per 60 seconds per IP
     if not _check_rate_limit(client_ip):
-        return jsonify({"error": "Rate limit exceeded — max 3 clears per 60s"}), 429  # type: ignore[return-value]
+        return jsonify({"error": "Rate limit exceeded — max 3 clears per 60s"}), 429
     with LOCK:
         conn = get_db()
-        conn.execute("DELETE FROM attempts")
+        _ = conn.execute("DELETE FROM attempts")
         conn.commit()
     logger.warning("History cleared by %s", client_ip)
     push_event("history_cleared", {})
@@ -470,11 +478,11 @@ def api_clear() -> Response:
 # ── /api/stream (SSE — FIX #2 + FIX #3) ─────────────────────────────────────
 @app.route("/api/stream")
 @require_api_key
-def api_stream() -> Response:
+def api_stream() -> Any:
     # FIX #3: return 503 when cap is reached instead of silently dropping oldest
     with _sse_lock:
         if len(_sse_clients) >= SSE_MAX_CLIENTS:
-            return jsonify({"error": "SSE capacity reached — try again later"}), 503  # type: ignore[return-value]
+            return jsonify({"error": "SSE capacity reached — try again later"}), 503
 
     client_buf: list[str] = []
     with _sse_lock:
@@ -547,11 +555,11 @@ DISPOSABLE_DOMAINS = {
 
 
 @app.route("/api/scan", methods=["POST"])
-def api_scan() -> Response:
-    body: dict[str, object] = request.get_json(silent=True) or {}
+def api_scan() -> Any:
+    body: dict[str, Any] = request.get_json(silent=True) or {}
     target = sanitize(body.get("target", ""))
     if not target:
-        return jsonify({"error": "target required"}), 400  # type: ignore[return-value]
+        return jsonify({"error": "target required"}), 400
 
     results: list[dict[str, str]] = []
 
@@ -569,7 +577,7 @@ def api_scan() -> Response:
 
     if is_ip:
         if not validate_ip(target):
-            return jsonify({"error": "invalid ip address"}), 400  # type: ignore[return-value]
+            return jsonify({"error": "invalid ip address"}), 400
         log("[*] Querying live geo-IP database (ipapi.co)…", "info")
         geo = get_geo(target)
         log(f"[+] IP: {target}", "success")
