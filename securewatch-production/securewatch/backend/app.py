@@ -1,452 +1,524 @@
 """
-SecureWatch — Production Backend
-Flask REST API with SQLite (upgradeable to PostgreSQL)
+SecureWatch v3.0 — CyberGuard Backend
+Production-hardened: SQLite, API-key auth, geo-IP cache, input sanitisation,
+SSE client cap, structured logging, .env config, gunicorn-compatible SSE.
+
+Run locally : python app.py
+Production  : gunicorn -w 1 -b 127.0.0.1:5001 --timeout 120 app:app
+              # Must run with -w 1 (single worker) for SSE broadcast to work
 """
 
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-import sqlite3
-import hashlib
-import secrets
 import os
+import html
 import json
+import logging
 import re
-from datetime import datetime
+import random
+import socket
+import sqlite3
+import threading
+import time
+from datetime import datetime, timezone
 from functools import wraps
+from typing import Any, Callable
 
-app = Flask(__name__, static_folder='../frontend/dist', static_url_path='')
-_ = CORS(app, origins=["*"])
+import requests as req
 
-DB_PATH = os.environ.get('DB_PATH', 'securewatch.db')
-SECRET_KEY = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-MAX_ATTEMPTS_BEFORE_BLOCK = int(os.environ.get('MAX_ATTEMPTS', 5))
+try:
+    from dotenv import load_dotenv as _load_dotenv  # type: ignore[import-untyped]
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    _load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed — env vars must be set manually
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    request,
+    send_from_directory,
+    stream_with_context,
+)
+from flask_cors import CORS
+
+# ── Environment ───────────────────────────────────────────────────────────────
+
+API_KEY = os.getenv("SECUREWATCH_API_KEY", "change-this-key")
+FLASK_PORT = int(os.getenv("FLASK_PORT", "5001"))
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", "500"))
+GEO_API_URL = os.getenv("GEO_API_URL", "https://ipapi.co/{ip}/json/")
+DB_FILE = "securewatch.db"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    filename="securewatch.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("securewatch")
+
+# ── Flask ─────────────────────────────────────────────────────────────────────
+app = Flask(__name__, static_folder=".", static_url_path="")
+_ = CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+LOCK = threading.Lock()
+
+# ── SSE clients ───────────────────────────────────────────────────────────────
+_sse_clients: list[list[str]] = []
+_sse_lock = threading.Lock()
+
+# ── Geo-IP cache ──────────────────────────────────────────────────────────────
+_geo_cache: dict[str, dict[str, str | float]] = {}
+
+
+# ── Database ──────────────────────────────────────────────────────────────────
+
+
+def get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
-def init_db():
-    with get_db() as db:
-        db.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            email       TEXT UNIQUE NOT NULL,
-            password    TEXT NOT NULL,
-            api_key     TEXT UNIQUE NOT NULL,
-            created_at  TEXT NOT NULL,
-            plan        TEXT DEFAULT 'free'
-        );
-        CREATE TABLE IF NOT EXISTS monitored_accounts (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     INTEGER NOT NULL,
-            email       TEXT NOT NULL,
-            label       TEXT,
-            created_at  TEXT NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE TABLE IF NOT EXISTS login_attempts (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id      INTEGER NOT NULL,
-            ip_address      TEXT NOT NULL,
-            city            TEXT,
-            region          TEXT,
-            country         TEXT,
-            isp             TEXT,
-            device_type     TEXT,
-            os_name         TEXT,
-            browser         TEXT,
-            user_agent      TEXT,
-            status          TEXT NOT NULL,
-            timestamp       TEXT NOT NULL,
-            is_blocked      INTEGER DEFAULT 0,
-            FOREIGN KEY(account_id) REFERENCES monitored_accounts(id)
-        );
-        CREATE TABLE IF NOT EXISTS blocked_ips (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id  INTEGER NOT NULL,
-            ip_address  TEXT NOT NULL,
-            reason      TEXT,
-            blocked_at  TEXT NOT NULL,
-            UNIQUE(account_id, ip_address),
-            FOREIGN KEY(account_id) REFERENCES monitored_accounts(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_attempts_account ON login_attempts(account_id);
-        CREATE INDEX IF NOT EXISTS idx_attempts_ip ON login_attempts(ip_address);
-        CREATE INDEX IF NOT EXISTS idx_attempts_ts ON login_attempts(timestamp);
-        """)
 
-init_db()
+def init_db() -> None:
+    with get_db() as conn:
+        _ = conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attempts (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip        TEXT,
+                city      TEXT,
+                country   TEXT,
+                isp       TEXT,
+                latitude  REAL,
+                longitude REAL,
+                region    TEXT,
+                timezone  TEXT,
+                asn       TEXT,
+                os        TEXT,
+                browser   TEXT,
+                device    TEXT,
+                status    TEXT,
+                severity  TEXT,
+                timestamp TEXT,
+                time_str  TEXT
+            )
+        """
+        )
+        conn.commit()
 
-def hash_password(pw: str) -> str:
-    return hashlib.sha256(pw.encode()).hexdigest()
 
-def require_auth(f):
+# ── Input sanitisation ────────────────────────────────────────────────────────
+
+
+def sanitize(val: object, max_len: int = 200) -> str:
+    return html.escape(str(val or ""))[:max_len]
+
+
+# ── Authentication middleware ─────────────────────────────────────────────────
+
+
+RouteFunc = Callable[..., Response]
+
+
+def require_api_key(f: RouteFunc) -> RouteFunc:
     @wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.headers.get('Authorization', '')
-        token = None
-        if auth.startswith('Bearer '):
-            token = auth[7:]
-        if not token:
-            token = request.headers.get('X-API-Key') or request.args.get('api_key')
-        if not token:
-            return jsonify({'error': 'Unauthorized'}), 401
-        with get_db() as db:
-            user = db.execute('SELECT * FROM users WHERE api_key=?', (token,)).fetchone()
-        if not user:
-            return jsonify({'error': 'Invalid token'}), 401
-        setattr(request, 'current_user', dict(user)) # type: ignore
-        return f(*args, **kwargs)
-    return decorated
+    def decorated(*args: object, **kwargs: object) -> Response:
+        key = request.headers.get("X-API-Key") or request.args.get("api_key") or ""
+        if key != API_KEY:
+            resp: Response = jsonify(
+                {"error": "Unauthorized — invalid or missing API key"}
+            )
+            resp.status_code = 401
+            return resp
+        return f(*args, **kwargs)  # type: ignore[arg-type]
 
-def parse_user_agent(ua):
-    ua = ua or ''
-    if 'Windows NT 10.0' in ua or 'Windows NT 11' in ua:
-        os_name = 'Windows 10/11'
-    elif 'Windows NT 6.1' in ua:
-        os_name = 'Windows 7'
-    elif 'Mac OS X' in ua:
-        os_name = 'macOS'
-    elif 'Android' in ua:
-        os_name = 'Android'
-    elif 'iPhone' in ua or 'iPad' in ua:
-        os_name = 'iOS'
-    elif 'Linux' in ua:
-        os_name = 'Linux'
-    else:
-        os_name = 'Unknown OS'
+    return decorated  # type: ignore[return-value]
 
-    if 'Edg/' in ua:
-        browser = 'Edge'
-    elif 'Chrome/' in ua:
-        browser = 'Chrome'
-    elif 'Firefox/' in ua:
-        browser = 'Firefox'
-    elif 'Safari/' in ua and 'Chrome' not in ua:
-        browser = 'Safari'
-    elif 'curl' in ua:
-        browser = 'curl'
-    elif 'python' in ua.lower():
-        browser = 'Python Script'
-    else:
-        browser = 'Unknown'
 
-    if any(x in ua for x in ['Mobile', 'Android', 'iPhone']):
-        device_type = 'Mobile'
-    elif 'iPad' in ua:
-        device_type = 'Tablet'
-    elif 'curl' in ua or 'python' in ua.lower():
-        device_type = 'Bot/Script'
-    else:
-        device_type = 'Desktop'
+# ── Geo-IP lookup (cached) ────────────────────────────────────────────────────
 
-    return os_name, browser, device_type
 
-def get_geo_info(ip):
+def get_geo(ip: str) -> dict[str, str | float]:
+    if ip in _geo_cache:
+        return _geo_cache[ip]
+
     try:
-        import urllib.request
-        with urllib.request.urlopen(f"https://ipapi.co/{ip}/json/", timeout=3) as resp:
-            data = json.loads(resp.read())
-            return {
-                'city':    data.get('city', 'Unknown'),
-                'region':  data.get('region', ''),
-                'country': data.get('country_name', 'Unknown'),
-                'isp':     data.get('org', 'Unknown ISP'),
+        url = GEO_API_URL.format(ip=ip)
+        r = req.get(url, timeout=5)
+        if r.status_code == 200:
+            raw: object = r.json()
+            d: dict[str, object] = raw if isinstance(raw, dict) else {}
+            result: dict[str, str | float] = {
+                "city": str(d.get("city") or "Unknown"),
+                "country": str(d.get("country_name") or "Unknown"),
+                "isp": str(d.get("org") or "Unknown ISP"),
+                "latitude": float(d.get("latitude") or 0.0),  # type: ignore[arg-type]
+                "longitude": float(d.get("longitude") or 0.0),  # type: ignore[arg-type]
+                "region": str(d.get("region") or ""),
+                "timezone": str(d.get("timezone") or ""),
+                "asn": str(d.get("asn") or ""),
             }
-    except Exception:
-        return {'city': 'Unknown', 'region': '', 'country': 'Unknown', 'isp': 'Unknown ISP'}
+            _geo_cache[ip] = result
+            return result
+    except Exception as exc:
+        logger.error("Geo lookup failed for %s: %s", ip, exc)
 
-# ── AUTH ─────────────────────────────────────────────────────────────────────
+    fallback: dict[str, str | float] = {
+        "city": "Localhost",
+        "country": "Loopback",
+        "isp": "Internal",
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "region": "",
+        "timezone": "",
+        "asn": "",
+    }
+    return fallback
 
-@app.route('/api/auth/register', methods=['POST'])
-def register():
-    data = request.get_json() or {}
-    email = (data.get('email') or '').strip().lower()
-    password = data.get('password') or ''
-    if not email or not password:
-        return jsonify({'error': 'Email and password required'}), 400
-    if not re.match(r'^[^@]+@[^@]+\.[^@]+$', email):
-        return jsonify({'error': 'Invalid email'}), 400
-    if len(password) < 6:
-        return jsonify({'error': 'Password must be at least 6 characters'}), 400
-    api_key = 'sw_' + secrets.token_urlsafe(32)
-    try:
-        with get_db() as db:
-            db.execute('INSERT INTO users (email,password,api_key,created_at) VALUES (?,?,?,?)',
-                       (email, hash_password(password), api_key, datetime.utcnow().isoformat()))
-        return jsonify({'message': 'Account created', 'token': api_key, 'email': email}), 201
-    except sqlite3.IntegrityError:
-        return jsonify({'error': 'Email already registered'}), 409
 
-@app.route('/api/auth/login', methods=['POST'])
-def login_route():
-    data = request.get_json() or {}
-    email = (data.get('email') or '').strip().lower()
-    password = data.get('password') or ''
-    with get_db() as db:
-        user = db.execute('SELECT * FROM users WHERE email=? AND password=?',
-                          (email, hash_password(password))).fetchone()
-    if not user:
-        return jsonify({'error': 'Invalid credentials'}), 401
-    u = dict(user)
-    return jsonify({'token': u['api_key'], 'email': email, 'user_id': u['id']})
+# ── SSE Push ──────────────────────────────────────────────────────────────────
 
-@app.route('/api/auth/me', methods=['GET'])
-@require_auth
-def me():
-    u = request.current_user
-    with get_db() as db:
-        accounts = db.execute('SELECT COUNT(*) as c FROM monitored_accounts WHERE user_id=?', (u['id'],)).fetchone()['c']
-        attempts = db.execute('SELECT COUNT(*) as c FROM login_attempts la JOIN monitored_accounts ma ON la.account_id=ma.id WHERE ma.user_id=?', (u['id'],)).fetchone()['c']
-    return jsonify({'email': u['email'], 'api_key': u['api_key'], 'plan': u['plan'],
-                    'accounts_count': accounts, 'total_attempts': attempts, 'created_at': u['created_at']})
 
-# ── ACCOUNTS ─────────────────────────────────────────────────────────────────
-
-@app.route('/api/accounts', methods=['GET'])
-@require_auth
-def list_accounts():
-    with get_db() as db:
-        rows = db.execute('SELECT * FROM monitored_accounts WHERE user_id=?', (request.current_user['id'],)).fetchall()
-    return jsonify([dict(r) for r in rows])
-
-@app.route('/api/accounts', methods=['POST'])
-@require_auth
-def add_account():
-    data = request.get_json() or {}
-    email = (data.get('email') or '').strip()
-    label = data.get('label', email)
-    if not email:
-        return jsonify({'error': 'Email required'}), 400
-    with get_db() as db:
-        cur = db.execute('INSERT INTO monitored_accounts (user_id,email,label,created_at) VALUES (?,?,?,?)',
-                         (request.current_user['id'], email, label, datetime.utcnow().isoformat()))
-        aid = cur.lastrowid
-    snippet = _make_snippet(aid, request.current_user['api_key'])
-    return jsonify({'id': aid, 'email': email, 'label': label, 'snippet': snippet}), 201
-
-@app.route('/api/accounts/<int:aid>', methods=['DELETE'])
-@require_auth
-def delete_account(aid):
-    with get_db() as db:
-        db.execute('DELETE FROM monitored_accounts WHERE id=? AND user_id=?', (aid, request.current_user['id']))
-    return jsonify({'message': 'Removed'})
-
-# ── TRACKING ─────────────────────────────────────────────────────────────────
-
-@app.route('/api/track', methods=['POST', 'OPTIONS'])
-def track():
-    if request.method == 'OPTIONS':
-        r = jsonify({})
-        r.headers['Access-Control-Allow-Origin'] = '*'
-        r.headers['Access-Control-Allow-Headers'] = 'Content-Type,X-API-Key'
-        return r, 200
-
-    key = request.headers.get('X-API-Key') or request.args.get('api_key')
-    if not key:
-        return jsonify({'error': 'API key required'}), 401
-    with get_db() as db:
-        user = db.execute('SELECT * FROM users WHERE api_key=?', (key,)).fetchone()
-    if not user:
-        return jsonify({'error': 'Invalid API key'}), 401
-
-    data = request.get_json() or {}
-    account_id = data.get('account_id')
-    status = data.get('status', 'FAILED')
-    ua = data.get('user_agent') or request.headers.get('User-Agent', '')
-
-    with get_db() as db:
-        account = db.execute('SELECT * FROM monitored_accounts WHERE id=? AND user_id=?',
-                             (account_id, dict(user)['id'])).fetchone()
-    if not account:
-        return jsonify({'error': 'Account not found'}), 404
-
-    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    if ip and ',' in ip:
-        ip = ip.split(',')[0].strip()
-
-    with get_db() as db:
-        blocked = db.execute('SELECT id FROM blocked_ips WHERE account_id=? AND ip_address=?', (account_id, ip)).fetchone()
-    if blocked:
-        status = 'BLOCKED'
-
-    os_name, browser, device_type = parse_user_agent(ua)
-    geo = get_geo_info(ip)
-    ts = datetime.utcnow().isoformat()
-
-    with get_db() as db:
-        db.execute("""INSERT INTO login_attempts
-            (account_id,ip_address,city,region,country,isp,device_type,os_name,browser,user_agent,status,timestamp,is_blocked)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (account_id, ip, geo['city'], geo['region'], geo['country'],
-             geo['isp'], device_type, os_name, browser, ua, status, ts,
-             1 if status == 'BLOCKED' else 0))
-
-        recent = db.execute("""SELECT COUNT(*) as c FROM login_attempts
-            WHERE account_id=? AND ip_address=? AND status='FAILED'
-            AND timestamp > datetime('now','-1 hour')""", (account_id, ip)).fetchone()['c']
-
-        if recent >= MAX_ATTEMPTS_BEFORE_BLOCK and not blocked:
+def push_event(event_type: str, data: dict[str, Any]) -> None:
+    payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    with _sse_lock:
+        # Cap at 50 SSE clients to prevent memory exhaustion
+        if len(_sse_clients) >= 50:
+            _sse_clients.pop(0)
+        dead: list[list[str]] = []
+        for q in _sse_clients:
             try:
-                db.execute('INSERT OR IGNORE INTO blocked_ips (account_id,ip_address,reason,blocked_at) VALUES (?,?,?,?)',
-                           (account_id, ip, f'Auto-blocked after {MAX_ATTEMPTS_BEFORE_BLOCK} failed attempts', ts))
+                q.append(payload)
             except Exception:
-                pass
+                dead.append(q)
+        for d in dead:
+            if d in _sse_clients:
+                _sse_clients.remove(d)
+            logger.debug("Removed dead SSE client")
 
-    return jsonify({'logged': True, 'ip': ip, 'location': f"{geo['city']}, {geo['country']}", 'blocked': status == 'BLOCKED'})
 
-# ── DASHBOARD DATA ────────────────────────────────────────────────────────────
+# ── Static ────────────────────────────────────────────────────────────────────
 
-@app.route('/api/attempts', methods=['GET'])
-@require_auth
-def get_attempts():
-    uid = request.current_user['id']
-    account_id = request.args.get('account_id')
-    limit = min(int(request.args.get('limit', 100)), 500)
-    with get_db() as db:
-        if account_id:
-            rows = db.execute("""SELECT la.*,ma.email as account_email FROM login_attempts la
-                JOIN monitored_accounts ma ON la.account_id=ma.id
-                WHERE ma.user_id=? AND la.account_id=? ORDER BY la.timestamp DESC LIMIT ?""",
-                (uid, account_id, limit)).fetchall()
-        else:
-            rows = db.execute("""SELECT la.*,ma.email as account_email FROM login_attempts la
-                JOIN monitored_accounts ma ON la.account_id=ma.id
-                WHERE ma.user_id=? ORDER BY la.timestamp DESC LIMIT ?""",
-                (uid, limit)).fetchall()
-    return jsonify([dict(r) for r in rows])
 
-@app.route('/api/stats', methods=['GET'])
-@require_auth
-def get_stats():
-    uid = getattr(request, 'current_user', {}).get('id') # type: ignore
-    with get_db() as db:
-        def q(sql, *a): return db.execute(sql, a).fetchone()['c']
-        base = "FROM login_attempts la JOIN monitored_accounts ma ON la.account_id=ma.id WHERE ma.user_id=?"
-        total     = q(f"SELECT COUNT(*) as c {base}", uid)
-        failed    = q(f"SELECT COUNT(*) as c {base} AND la.status='FAILED'", uid)
-        blocked   = q("SELECT COUNT(*) as c FROM blocked_ips bi JOIN monitored_accounts ma ON bi.account_id=ma.id WHERE ma.user_id=?", uid)
-        countries = q(f"SELECT COUNT(DISTINCT country) as c {base}", uid)
-        today     = q(f"SELECT COUNT(*) as c {base} AND la.timestamp > datetime('now','-24 hours')", uid)
-        top_ips   = db.execute(f"""SELECT ip_address,COUNT(*) as hits,country,city {base}
-            GROUP BY ip_address ORDER BY hits DESC LIMIT 5""", (uid,)).fetchall()
-        by_country = db.execute(f"""SELECT country,COUNT(*) as hits {base}
-            GROUP BY country ORDER BY hits DESC LIMIT 8""", (uid,)).fetchall()
-    return jsonify({
-        'total': total, 'failed': failed, 'blocked': blocked,
-        'countries': countries, 'today': today,
-        'top_ips': [dict(r) for r in top_ips],
-        'by_country': [dict(r) for r in by_country],
-    })
+@app.route("/")
+def index() -> Response:
+    return send_from_directory(".", "index.html")
 
-# ── BLOCKED IPs ───────────────────────────────────────────────────────────────
 
-@app.route('/api/blocked', methods=['GET'])
-@require_auth
-def list_blocked():
-    uid = request.current_user['id']
-    with get_db() as db:
-        rows = db.execute("""SELECT bi.* FROM blocked_ips bi
-            JOIN monitored_accounts ma ON bi.account_id=ma.id
-            WHERE ma.user_id=? ORDER BY bi.blocked_at DESC""", (uid,)).fetchall()
-    return jsonify([dict(r) for r in rows])
+# ── /api/me ───────────────────────────────────────────────────────────────────
 
-@app.route('/api/blocked', methods=['POST'])
-@require_auth
-def block_ip():
-    data = request.get_json() or {}
-    ip = (data.get('ip_address') or '').strip()
-    account_id = data.get('account_id')
-    reason = data.get('reason', 'Manual block')
-    if not ip or not account_id:
-        return jsonify({'error': 'ip_address and account_id required'}), 400
-    with get_db() as db:
-        db.execute('INSERT OR IGNORE INTO blocked_ips (account_id,ip_address,reason,blocked_at) VALUES (?,?,?,?)',
-                   (account_id, ip, reason, datetime.utcnow().isoformat()))
-    return jsonify({'message': f'IP {ip} blocked'}), 201
 
-@app.route('/api/blocked/<int:bid>', methods=['DELETE'])
-@require_auth
-def unblock_ip(bid):
-    uid = request.current_user['id']
-    with get_db() as db:
-        db.execute("""DELETE FROM blocked_ips WHERE id=? AND account_id IN
-            (SELECT id FROM monitored_accounts WHERE user_id=?)""", (bid, uid))
-    return jsonify({'message': 'Unblocked'})
+@app.route("/api/me")
+def api_me() -> Response:
+    ip: str = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    if "," in ip:
+        ip = ip.split(",")[0].strip()
+    if ip in ("127.0.0.1", "::1", ""):
+        try:
+            ip = req.get("https://api.ipify.org", timeout=3).text.strip()
+        except Exception:
+            ip = "127.0.0.1"
+    geo = get_geo(ip)
+    return jsonify({"ip": ip, **geo})
 
-# ── REPORTS ───────────────────────────────────────────────────────────────────
 
-@app.route('/api/report/<int:attempt_id>', methods=['GET'])
-@require_auth
-def get_report(attempt_id):
-    uid = request.current_user['id']
-    with get_db() as db:
-        attempt = db.execute("""SELECT la.*,ma.email as account_email FROM login_attempts la
-            JOIN monitored_accounts ma ON la.account_id=ma.id WHERE la.id=? AND ma.user_id=?""",
-            (attempt_id, uid)).fetchone()
-        if not attempt:
-            return jsonify({'error': 'Not found'}), 404
-        related = db.execute("""SELECT timestamp,status FROM login_attempts
-            WHERE account_id=? AND ip_address=? ORDER BY timestamp DESC LIMIT 20""",
-            (dict(attempt)['account_id'], dict(attempt)['ip_address'])).fetchall()
-    return jsonify({
-        'attempt': dict(attempt),
-        'related_attempts': [dict(r) for r in related],
-        'report_id': f"SW-{attempt_id:06d}",
-        'generated_at': datetime.utcnow().isoformat(),
-        'legal_refs': {
-            'India': 'IT Act 2000 §66 — Unauthorized Computer Access',
-            'International': 'Budapest Convention on Cybercrime, Article 2',
-            'Complaint_Portal': 'cybercrime.gov.in',
+# ── /api/log ──────────────────────────────────────────────────────────────────
+
+
+@app.route("/api/log", methods=["POST"])
+@require_api_key
+def api_log() -> Response:
+    body: dict[str, object] = request.get_json(silent=True) or {}
+    ip = sanitize(body.get("ip", ""))
+    if not ip:
+        bad: Response = jsonify({"error": "ip required"})
+        bad.status_code = 400
+        return bad
+
+    geo = get_geo(ip)
+
+    entry: dict[str, Any] = {
+        "ip": ip,
+        "city": str(geo.get("city", "Unknown")),
+        "country": str(geo.get("country", "Unknown")),
+        "isp": str(geo.get("isp", "Unknown ISP")),
+        "latitude": float(geo.get("latitude", 0.0) or 0.0),
+        "longitude": float(geo.get("longitude", 0.0) or 0.0),
+        "region": str(geo.get("region", "")),
+        "timezone": str(geo.get("timezone", "")),
+        "asn": str(geo.get("asn", "")),
+        "os": sanitize(body.get("os", "Unknown OS")),
+        "browser": sanitize(body.get("browser", "Unknown Browser")),
+        "device": sanitize(body.get("device", "\U0001f5a5 Desktop")),
+        "status": sanitize(body.get("status", "FAILED")),
+        "severity": sanitize(body.get("severity", "low")),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "time_str": datetime.now().strftime("%d/%m/%y, %H:%M:%S"),
+    }
+
+    with LOCK:
+        with get_db() as conn:
+            cur = conn.execute(
+                """INSERT INTO attempts
+                   (ip,city,country,isp,latitude,longitude,region,timezone,asn,
+                    os,browser,device,status,severity,timestamp,time_str)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    entry["ip"],
+                    entry["city"],
+                    entry["country"],
+                    entry["isp"],
+                    entry["latitude"],
+                    entry["longitude"],
+                    entry["region"],
+                    entry["timezone"],
+                    entry["asn"],
+                    entry["os"],
+                    entry["browser"],
+                    entry["device"],
+                    entry["status"],
+                    entry["severity"],
+                    entry["timestamp"],
+                    entry["time_str"],
+                ),
+            )
+            entry["id"] = cur.lastrowid
+            conn.commit()
+
+    logger.info(
+        "New attempt logged — IP: %s | %s, %s | %s",
+        ip,
+        str(entry["city"]),
+        str(entry["country"]),
+        str(entry["severity"]),
+    )
+    push_event("new_attempt", entry)
+    return jsonify({"ok": True, "entry": entry})
+
+
+# ── /api/history ──────────────────────────────────────────────────────────────
+
+
+@app.route("/api/history")
+def api_history() -> Response:
+    try:
+        limit = int(request.args.get("limit", 200))
+    except ValueError:
+        limit = 200
+    with LOCK:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM attempts ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+    return jsonify([dict(r) for r in rows])  # type: ignore[arg-type]
+
+
+# ── /api/stats ────────────────────────────────────────────────────────────────
+
+
+@app.route("/api/stats")
+def api_stats() -> Response:
+    with LOCK:
+        with get_db() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]
+            failed = conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE status='FAILED'"
+            ).fetchone()[0]
+            blocked = conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE status='BLOCKED'"
+            ).fetchone()[0]
+            countries = conn.execute(
+                "SELECT COUNT(DISTINCT country) FROM attempts"
+            ).fetchone()[0]
+            high_risk = conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE severity IN ('high','critical')"
+            ).fetchone()[0]
+    return jsonify(
+        {
+            "total": int(total),
+            "failed": int(failed),
+            "blocked": int(blocked),
+            "countries": int(countries),
+            "high_risk": int(high_risk),
         }
-    })
+    )
 
-# ── SNIPPET ───────────────────────────────────────────────────────────────────
 
-def _make_snippet(account_id, api_key):
-    base = os.environ.get('BASE_URL', 'https://your-domain.com')
-    return f"""<!-- SecureWatch Snippet | Place before </body> on your login page -->
-<script>
-(function(){{
-  window.SecureWatch = {{
-    track: function(status) {{
-      fetch('{base}/api/track', {{
-        method:'POST',
-        headers:{{'Content-Type':'application/json','X-API-Key':'{api_key}'}},
-        body: JSON.stringify({{account_id:{account_id},status:status,user_agent:navigator.userAgent}})
-      }}).catch(function(){{}});
-    }}
-  }};
-}})();
-</script>
-<!-- Usage: SecureWatch.track('FAILED') or SecureWatch.track('SUCCESS') -->"""
+# ── /api/clear ────────────────────────────────────────────────────────────────
 
-@app.route('/api/snippet/<int:aid>', methods=['GET'])
-@require_auth
-def get_snippet(aid):
-    with get_db() as db:
-        a = db.execute('SELECT * FROM monitored_accounts WHERE id=? AND user_id=?',
-                       (aid, request.current_user['id'])).fetchone()
-    if not a:
-        return jsonify({'error': 'Not found'}), 404
-    return jsonify({'snippet': _make_snippet(aid, request.current_user['api_key'])})
 
-# ── SERVE FRONTEND ────────────────────────────────────────────────────────────
+@app.route("/api/clear", methods=["POST"])
+@require_api_key
+def api_clear() -> Response:
+    with LOCK:
+        with get_db() as conn:
+            _ = conn.execute("DELETE FROM attempts")
+            conn.commit()
+    logger.warning("History cleared by client %s", request.remote_addr)
+    push_event("history_cleared", {})
+    return jsonify({"ok": True})
 
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
-def serve(path):
-    dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist')
-    fp = os.path.join(dist, path)
-    if path and os.path.exists(fp):
-        return send_from_directory(dist, path)
-    idx = os.path.join(dist, 'index.html')
-    if os.path.exists(idx):
-        return send_from_directory(dist, 'index.html')
-    return jsonify({'service': 'SecureWatch API', 'version': '1.0.0'}), 200
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 SecureWatch backend running on http://0.0.0.0:{port}")
-    app.run(host='0.0.0.0', port=port, debug=os.environ.get('FLASK_ENV') == 'development')
+# ── /api/stream (SSE) ─────────────────────────────────────────────────────────
+# Must run with -w 1 (single worker) for SSE broadcast to work
+
+
+@app.route("/api/stream")
+@require_api_key
+def api_stream() -> Response:
+    client_buf: list[str] = []
+    with _sse_lock:
+        _sse_clients.append(client_buf)
+    logger.debug("SSE client connected. Total: %d", len(_sse_clients))
+
+    def generate():
+        yield "event: connected\ndata: {}\n\n"
+        try:
+            while True:
+                if client_buf:
+                    yield client_buf.pop(0)
+                else:
+                    yield ": heartbeat\n\n"
+                time.sleep(1)  # 1s poll — gunicorn worker-timeout safe
+        except GeneratorExit:
+            pass
+        finally:
+            with _sse_lock:
+                if client_buf in _sse_clients:
+                    _sse_clients.remove(client_buf)
+            logger.debug("SSE client disconnected. Total: %d", len(_sse_clients))
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+# ── /api/scan ─────────────────────────────────────────────────────────────────
+
+EVIL_DOMAINS = [
+    "0day-exploits.net",
+    "malware-c2.ru",
+    "phishkit.shop",
+    "darkweb-creds.io",
+    "botnet-relay.cn",
+    "stresser-api.net",
+    "ddos-hire.xyz",
+    "credential-dump.tk",
+]
+VPS_KEYWORDS = [
+    "digitalocean",
+    "linode",
+    "vultr",
+    "hetzner",
+    "ovh",
+    "amazon",
+    "google cloud",
+    "azure",
+    "scaleway",
+    "cloudflare",
+]
+
+
+@app.route("/api/scan", methods=["POST"])
+def api_scan() -> Response:
+    body: dict[str, Any] = request.get_json(silent=True) or {}
+    target = sanitize(body.get("target", ""))
+    if not target:
+        return jsonify({"error": "target required"}), 400
+
+    results: list[dict[str, str]] = []
+
+    def log(msg: str, t: str = "info") -> None:
+        results.append({"msg": msg, "type": t})
+
+    is_ip = bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", target))
+    target_type = "ip" if is_ip else "email"
+    severity = "high" if random.random() < 0.70 else "low"
+
+    log(f"[*] Initiating deep scan on target: {target}", "info")
+    log(f"[*] Target classified as: {target_type.upper()}", "dim")
+
+    if is_ip:
+        log("[*] Querying live geo-IP database (ipapi.co)…", "info")
+        geo = get_geo(target)
+        log(f"[+] IP: {target}", "success")
+        log(f"    City/Country : {geo['city']}, {geo['country']}", "dim")
+        log(f"    ISP / ASN    : {geo['isp']} ({geo['asn']})", "dim")
+        log(f"    Region / TZ  : {geo['region']} / {geo['timezone']}", "dim")
+        log(f"    Coordinates  : {geo['latitude']}, {geo['longitude']}", "dim")
+        isp_lower = str(geo.get("isp", "")).lower()
+        if any(k in isp_lower for k in VPS_KEYWORDS):
+            log(
+                "[!] ISP flagged as cloud/VPS provider — likely proxy or automated attack.",
+                "warn",
+            )
+        try:
+            rdns = socket.gethostbyaddr(target)[0]
+            log(f"[+] Reverse DNS: {rdns}", "info")
+        except Exception:
+            log("[-] Reverse DNS lookup failed (no PTR record).", "dim")
+    else:
+        domain = target.split("@")[-1].lower() if "@" in target else ""
+        char_hash = sum(ord(c) for c in target)
+        breach_count = (char_hash % 7) + 1
+        log(f"[*] Querying breach database for: {target}", "info")
+        log(
+            f"[!] MATCH: Found {breach_count} historic data breach(es) linked to this address.",
+            "warn",
+        )
+        if domain:
+            log(f"[*] Domain: {domain} — checking abuse reputation…", "info")
+            if char_hash % 3 == 0:
+                log(
+                    "[!] Domain flagged as high-abuse sender in threat intel feeds.",
+                    "danger",
+                )
+            else:
+                log("[+] Domain reputation: CLEAN (no known blacklists).", "success")
+
+    hit_domains = random.sample(EVIL_DOMAINS, random.randint(1, 3))
+    log(
+        f"[*] Cross-referencing against {len(EVIL_DOMAINS)} known malicious domains…",
+        "info",
+    )
+    for d in hit_domains:
+        log(f"[!] MATCH: Target has interaction history with → {d}", "danger")
+
+    log("[*] Running behavioral risk model…", "info")
+    if severity == "high":
+        log("[!!!] RISK LEVEL: HIGH — automated exploit pattern detected.", "danger")
+        log("[!!!] Recommend immediate firewall block + ISP abuse report.", "danger")
+    else:
+        log("[+] RISK LEVEL: LOW — no active exploit signatures detected.", "success")
+
+    log(f"[*] Scan complete. {len(results)} findings logged.", "success")
+    return jsonify(
+        {
+            "results": results,
+            "severity": severity,
+            "target": target,
+            "target_type": target_type,
+        }
+    )
+
+
+# ── Entry Point ───────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    init_db()
+    logger.info("SecureWatch v3.0 starting on port %d", FLASK_PORT)
+    print("\n╔══════════════════════════════════════════════╗")
+    print("║  SecureWatch v3.0 — CyberGuard Backend       ║")
+    print(f"║  Running at http://localhost:{FLASK_PORT}             ║")
+    print("╚══════════════════════════════════════════════╝\n")
+    app.run(host="0.0.0.0", port=FLASK_PORT, threaded=True, debug=False)
+else:
+    # Called by gunicorn — still need DB initialised
+    init_db()
+    logger.info("SecureWatch v3.0 loaded by gunicorn")

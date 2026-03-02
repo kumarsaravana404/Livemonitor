@@ -20,14 +20,14 @@ import threading
 import time
 from datetime import datetime, timezone
 from functools import wraps
-from typing import Callable
+from typing import Callable, cast
 
 import requests as req
 
 try:
-    from dotenv import load_dotenv as _load_dotenv  # type: ignore[import-untyped,import-not-found]
+    import dotenv  # pyright: ignore[reportMissingImports]
 
-    _load_dotenv()
+    dotenv.load_dotenv()  # pyright: ignore[reportUnknownMemberType]
 except ImportError:
     pass  # python-dotenv not installed — env vars must be set manually
 from flask import (
@@ -146,8 +146,8 @@ def get_geo(ip: str) -> dict[str, str | float]:
         url = GEO_API_URL.format(ip=ip)
         r = req.get(url, timeout=5)
         if r.status_code == 200:
-            raw: object = r.json()
-            d: dict[str, object] = raw if isinstance(raw, dict) else {}
+            raw = cast(object, r.json())
+            d = cast("dict[str, object]", raw if isinstance(raw, dict) else {})
             result: dict[str, str | float] = {
                 "city": str(d.get("city") or "Unknown"),
                 "country": str(d.get("country_name") or "Unknown"),
@@ -184,7 +184,7 @@ def push_event(event_type: str, data: dict[str, object]) -> None:
     with _sse_lock:
         # Cap at 50 SSE clients to prevent memory exhaustion
         if len(_sse_clients) >= 50:
-            _sse_clients.pop(0)
+            _ = _sse_clients.pop(0)
         dead: list[list[str]] = []
         for q in _sse_clients:
             try:
@@ -307,9 +307,10 @@ def api_history() -> Response:
         limit = 200
     with LOCK:
         with get_db() as conn:
-            rows = conn.execute(
+            cursor = conn.execute(
                 "SELECT * FROM attempts ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()
+            )
+            rows = cast("list[sqlite3.Row]", cursor.fetchall())
     return jsonify([dict(r) for r in rows])  # type: ignore[arg-type]
 
 
@@ -320,26 +321,40 @@ def api_history() -> Response:
 def api_stats() -> Response:
     with LOCK:
         with get_db() as conn:
-            total = conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]
-            failed = conn.execute(
-                "SELECT COUNT(*) FROM attempts WHERE status='FAILED'"
-            ).fetchone()[0]
-            blocked = conn.execute(
-                "SELECT COUNT(*) FROM attempts WHERE status='BLOCKED'"
-            ).fetchone()[0]
-            countries = conn.execute(
-                "SELECT COUNT(DISTINCT country) FROM attempts"
-            ).fetchone()[0]
-            high_risk = conn.execute(
-                "SELECT COUNT(*) FROM attempts WHERE severity IN ('high','critical')"
-            ).fetchone()[0]
+            total = cast(
+                int, conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]
+            )
+            failed = cast(
+                int,
+                conn.execute(
+                    "SELECT COUNT(*) FROM attempts WHERE status='FAILED'"
+                ).fetchone()[0],
+            )
+            blocked = cast(
+                int,
+                conn.execute(
+                    "SELECT COUNT(*) FROM attempts WHERE status='BLOCKED'"
+                ).fetchone()[0],
+            )
+            countries = cast(
+                int,
+                conn.execute("SELECT COUNT(DISTINCT country) FROM attempts").fetchone()[
+                    0
+                ],
+            )
+            high_risk = cast(
+                int,
+                conn.execute(
+                    "SELECT COUNT(*) FROM attempts WHERE severity IN ('high','critical')"
+                ).fetchone()[0],
+            )
     return jsonify(
         {
-            "total": int(total),  # type: ignore[arg-type]
-            "failed": int(failed),  # type: ignore[arg-type]
-            "blocked": int(blocked),  # type: ignore[arg-type]
-            "countries": int(countries),  # type: ignore[arg-type]
-            "high_risk": int(high_risk),  # type: ignore[arg-type]
+            "total": total,
+            "failed": failed,
+            "blocked": blocked,
+            "countries": countries,
+            "high_risk": high_risk,
         }
     )
 
